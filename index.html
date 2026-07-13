@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Kobe-Cam Pet Station</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1115;
+    --surface: #1a1d23;
+    --border: #2a2d35;
+    --text: #e4e4e7;
+    --text-dim: #71717a;
+    --accent: #22c55e;
+    --accent-dim: #16a34a;
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --radius: 10px;
+  }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100dvh;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* --- Header --- */
+  .header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header h1 { font-size: 18px; font-weight: 600; }
+  .header .status-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--text-dim);
+    display: inline-block;
+    margin-right: 8px;
+  }
+  .header .status-dot.active { background: var(--accent); animation: pulse 2s infinite; }
+  .header .status-dot.error { background: var(--danger); }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  /* --- Config Panel --- */
+  .config-panel {
+    padding: 20px 16px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    max-width: 480px;
+    margin: 0 auto;
+    width: 100%;
+  }
+  .config-panel.hidden { display: none; }
+
+  .field label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .field input, .field select {
+    width: 100%;
+    padding: 10px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 16px;
+    outline: none;
+  }
+  .field input:focus, .field select:focus {
+    border-color: var(--accent);
+  }
+  .field .hint {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+  }
+
+  .btn {
+    display: block;
+    width: 100%;
+    padding: 14px;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.2s;
+  }
+  .btn:active { opacity: 0.8; }
+  .btn-primary { background: var(--accent); color: #000; }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-ghost {
+    background: transparent;
+    color: var(--text-dim);
+    border: 1px solid var(--border);
+  }
+
+  /* --- Monitor View --- */
+  .monitor-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .monitor-view.hidden { display: none; }
+
+  .camera-container {
+    position: relative;
+    width: 100%;
+    aspect-ratio: 4/3;
+    background: #000;
+    overflow: hidden;
+  }
+  .camera-container video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+  .camera-container .motion-indicator {
+    position: absolute;
+    top: 12px; right: 12px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    background: rgba(0,0,0,0.6);
+    color: var(--text-dim);
+    backdrop-filter: blur(8px);
+  }
+  .camera-container .motion-indicator.active {
+    background: rgba(239,68,68,0.8);
+    color: #fff;
+  }
+
+  .stats-bar {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 1px;
+    background: var(--border);
+    border-bottom: 1px solid var(--border);
+  }
+  .stat {
+    background: var(--surface);
+    padding: 10px 12px;
+    text-align: center;
+  }
+  .stat .stat-value {
+    font-size: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat .stat-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-top: 2px;
+  }
+
+  .log {
+    flex: 1;
+    padding: 12px 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .log-entry {
+    font-size: 13px;
+    color: var(--text-dim);
+    font-variant-numeric: tabular-nums;
+  }
+  .log-entry .time { color: var(--text-dim); margin-right: 8px; }
+  .log-entry.motion { color: var(--warn); }
+  .log-entry.alert { color: var(--accent); }
+  .log-entry.error { color: var(--danger); }
+
+  .monitor-footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+  }
+  .monitor-footer .btn { flex: 1; }
+
+  /* --- VDO.Ninja iframe (hidden, just for streaming) --- */
+  .vdo-iframe {
+    position: absolute;
+    width: 1px; height: 1px;
+    opacity: 0;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+
+<!-- Header -->
+<div class="header">
+  <div style="display:flex;align-items:center;">
+    <span class="status-dot" id="statusDot"></span>
+    <h1>Kobe-Cam</h1>
+  </div>
+  <span id="headerStatus" style="font-size:13px;color:var(--text-dim);">Not monitoring</span>
+</div>
+
+<!-- Config Panel -->
+<div class="config-panel" id="configPanel">
+  <div class="field">
+    <label>Stream ID</label>
+    <input type="text" id="cfgStreamId" placeholder="e.g. kobe-cam-123">
+    <div class="hint">Unique ID for the VDO.Ninja stream. Share this with viewers.</div>
+  </div>
+  <div class="field">
+    <label>Telegram Bot Token</label>
+    <input type="text" id="cfgBotToken" placeholder="123456:ABC-DEF...">
+    <div class="hint">Get this from @BotFather on Telegram.</div>
+  </div>
+  <div class="field">
+    <label>Telegram Chat ID</label>
+    <input type="text" id="cfgChatId" placeholder="-100123456789">
+    <div class="hint">The group chat ID where alerts will be sent.</div>
+  </div>
+  <div class="field">
+    <label>Camera</label>
+    <select id="cfgCamera">
+      <option value="environment">Back camera</option>
+      <option value="user">Front camera</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Motion Sensitivity</label>
+    <select id="cfgSensitivity">
+      <option value="3">High (3% pixel change)</option>
+      <option value="5" selected>Medium (5% pixel change)</option>
+      <option value="10">Low (10% pixel change)</option>
+    </select>
+  </div>
+  <button class="btn btn-primary" id="btnStart">Start Monitoring</button>
+</div>
+
+<!-- Monitor View -->
+<div class="monitor-view hidden" id="monitorView">
+  <div class="camera-container">
+    <video id="video" autoplay playsinline muted></video>
+    <div class="motion-indicator" id="motionBadge">Calm</div>
+  </div>
+  <div class="stats-bar">
+    <div class="stat">
+      <div class="stat-value" id="statAlerts">0</div>
+      <div class="stat-label">Alerts</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="statLast">--:--</div>
+      <div class="stat-label">Last Alert</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value" id="statUptime">00:00</div>
+      <div class="stat-label">Uptime</div>
+    </div>
+  </div>
+  <div class="log" id="log"></div>
+  <div class="monitor-footer">
+    <button class="btn btn-ghost" id="btnSettings">Settings</button>
+    <button class="btn btn-danger" id="btnStop">Stop</button>
+  </div>
+</div>
+
+<!-- Offscreen canvases for motion detection -->
+<canvas id="canvasCurrent" style="display:none;"></canvas>
+<canvas id="canvasPrevious" style="display:none;"></canvas>
+<canvas id="canvasSnapshot" style="display:none;"></canvas>
+
+<script>
+(function() {
+  'use strict';
+
+  // --- Config ---
+  const COOLDOWN_MS = 30000;
+  const DETECTION_INTERVAL_MS = 500;
+  const CANVAS_WIDTH = 320;
+  const CANVAS_HEIGHT = 240;
+  const PIXEL_DIFF_THRESHOLD = 30;
+
+  // --- State ---
+  let config = loadConfig();
+  let monitoring = false;
+  let stream = null;
+  let detectionTimer = null;
+  let previousImageData = null;
+  let lastAlertTime = 0;
+  let alertCount = 0;
+  let startTime = 0;
+  let uptimeTimer = null;
+  let wakeLockSentinel = null;
+  let noSleepVideo = null;
+
+  // --- DOM ---
+  const $ = (id) => document.getElementById(id);
+  const configPanel = $('configPanel');
+  const monitorView = $('monitorView');
+  const video = $('video');
+  const motionBadge = $('motionBadge');
+  const statusDot = $('statusDot');
+  const headerStatus = $('headerStatus');
+  const canvasCurrent = $('canvasCurrent');
+  const canvasPrevious = $('canvasPrevious');
+  const canvasSnapshot = $('canvasSnapshot');
+  const ctxCurrent = canvasCurrent.getContext('2d', { willReadFrequently: true });
+  const ctxPrevious = canvasPrevious.getContext('2d', { willReadFrequently: true });
+  const ctxSnapshot = canvasSnapshot.getContext('2d');
+  const logEl = $('log');
+
+  canvasCurrent.width = canvasPrevious.width = CANVAS_WIDTH;
+  canvasCurrent.height = canvasPrevious.height = CANVAS_HEIGHT;
+
+  // --- Config persistence ---
+  function loadConfig() {
+    try {
+      return JSON.parse(localStorage.getItem('kobecam-config')) || {};
+    } catch { return {}; }
+  }
+
+  function saveConfig() {
+    config = {
+      streamId: $('cfgStreamId').value.trim(),
+      botToken: $('cfgBotToken').value.trim(),
+      chatId: $('cfgChatId').value.trim(),
+      camera: $('cfgCamera').value,
+      sensitivity: parseInt($('cfgSensitivity').value, 10),
+    };
+    localStorage.setItem('kobecam-config', JSON.stringify(config));
+  }
+
+  function restoreConfig() {
+    if (!config.streamId) {
+      config.streamId = 'kobe-' + Math.random().toString(36).substring(2, 8);
+    }
+    $('cfgStreamId').value = config.streamId || '';
+    $('cfgBotToken').value = config.botToken || '';
+    $('cfgChatId').value = config.chatId || '';
+    $('cfgCamera').value = config.camera || 'environment';
+    $('cfgSensitivity').value = String(config.sensitivity || 5);
+  }
+
+  // --- Logging ---
+  function log(msg, type = '') {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry' + (type ? ' ' + type : '');
+    const now = new Date();
+    const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    entry.innerHTML = '<span class="time">' + time + '</span>' + msg;
+    logEl.prepend(entry);
+    if (logEl.children.length > 100) logEl.lastChild.remove();
+  }
+
+  // --- Wake Lock ---
+  async function acquireWakeLock() {
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockSentinel = await navigator.wakeLock.request('screen');
+        wakeLockSentinel.addEventListener('release', () => {
+          if (monitoring) acquireWakeLock();
+        });
+      }
+    } catch {}
+    enableNoSleep();
+  }
+
+  function enableNoSleep() {
+    if (noSleepVideo) return;
+    noSleepVideo = document.createElement('video');
+    noSleepVideo.setAttribute('playsinline', '');
+    noSleepVideo.setAttribute('muted', '');
+    noSleepVideo.loop = true;
+    noSleepVideo.src = 'data:video/mp4;base64,AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAAIZnJlZQAAA3RtZGF0AAACrgYF//+q3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE1NyByMjk2OSBkMThhMDA5IC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAxOSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0tMiB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0zIGJfcHlyYW1pZD0yIGJfYWRhcHQ9MSBiX2JpYXM9MCBkaXJlY3Q9MSB3ZWlnaHRiPTEgb3Blbl9nb3A9MCB3ZWlnaHRwPTIga2V5aW50PTI1MCBrZXlpbnRfbWluPTEgc2NlbmVjdXQ9NDAgaW50cmFfcmVmcmVzaD0wIHJjX2xvb2thaGVhZD00MCByYz1jcmYgbWJ0cmVlPTEgY3JmPTI4LjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MToxLjAwAIAAAAAwZYiEAD//8m+P5OXfBeLGOfKE3xkODvFZuBflHv/+VwJIta6cbpIo6eIyJ1VFicMzACAAAADAAADAAADAAADAAAHgQEAAARRoYBCf/wC+yG71MAALAAAAAMMAZ0C/YAAFQAAAAMAE0GaIBDGAAAA3QZogL0AAADzQZ4iL4AAABuEGeQi+AAAAbhBnmIvgAAAG4QZ6CL4AAABukGewi+AAAAbhBnuIvgAAAG4QZ8CAAAAAADHAAADAEMAAAMBAAADAAAAMAAAAAAAAAAAAAAAAAAAAA==';
+    noSleepVideo.play().catch(() => {});
+  }
+
+  function releaseWakeLock() {
+    if (wakeLockSentinel) { wakeLockSentinel.release(); wakeLockSentinel = null; }
+    if (noSleepVideo) { noSleepVideo.pause(); noSleepVideo = null; }
+  }
+
+  // --- Camera ---
+  async function startCamera() {
+    const constraints = {
+      video: {
+        facingMode: config.camera || 'environment',
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      },
+      audio: false,
+    };
+    stream = await navigator.mediaDevices.getUserMedia(constraints);
+    video.srcObject = stream;
+
+    const track = stream.getVideoTracks()[0];
+    const settings = track.getSettings();
+    canvasSnapshot.width = settings.width || 1280;
+    canvasSnapshot.height = settings.height || 720;
+  }
+
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+    video.srcObject = null;
+  }
+
+  // --- VDO.Ninja ---
+  function startVDO() {
+    const existing = document.querySelector('.vdo-iframe');
+    if (existing) existing.remove();
+
+    const iframe = document.createElement('iframe');
+    iframe.className = 'vdo-iframe';
+    iframe.allow = 'camera;microphone;autoplay';
+    iframe.src = 'https://vdo.ninja/?push=' + encodeURIComponent(config.streamId)
+      + '&webcam&autostart&quality=1&bitrate=1500&label=KobeCam';
+    document.body.appendChild(iframe);
+  }
+
+  function stopVDO() {
+    const iframe = document.querySelector('.vdo-iframe');
+    if (iframe) iframe.remove();
+  }
+
+  // --- Motion Detection ---
+  function startDetection() {
+    previousImageData = null;
+    detectionTimer = setInterval(detectMotion, DETECTION_INTERVAL_MS);
+  }
+
+  function stopDetection() {
+    clearInterval(detectionTimer);
+    detectionTimer = null;
+    previousImageData = null;
+  }
+
+  function detectMotion() {
+    if (!video.videoWidth) return;
+
+    ctxCurrent.drawImage(video, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+    const currentData = ctxCurrent.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+
+    if (!previousImageData) {
+      previousImageData = currentData;
+      return;
+    }
+
+    const curr = currentData.data;
+    const prev = previousImageData.data;
+    const totalPixels = CANVAS_WIDTH * CANVAS_HEIGHT;
+    let changedPixels = 0;
+
+    for (let i = 0; i < curr.length; i += 4) {
+      const gCurr = (curr[i] + curr[i+1] + curr[i+2]) / 3;
+      const gPrev = (prev[i] + prev[i+1] + prev[i+2]) / 3;
+      if (Math.abs(gCurr - gPrev) > PIXEL_DIFF_THRESHOLD) {
+        changedPixels++;
+      }
+    }
+
+    previousImageData = currentData;
+
+    const changePercent = (changedPixels / totalPixels) * 100;
+    const sensitivity = config.sensitivity || 5;
+
+    if (changePercent > sensitivity) {
+      onMotionDetected(changePercent);
+    } else {
+      motionBadge.textContent = 'Calm';
+      motionBadge.classList.remove('active');
+    }
+  }
+
+  async function onMotionDetected(changePercent) {
+    motionBadge.textContent = 'Motion ' + changePercent.toFixed(1) + '%';
+    motionBadge.classList.add('active');
+
+    const now = Date.now();
+    if (now - lastAlertTime < COOLDOWN_MS) return;
+    lastAlertTime = now;
+    alertCount++;
+    $('statAlerts').textContent = alertCount;
+    $('statLast').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    log('Motion detected (' + changePercent.toFixed(1) + '% change)', 'motion');
+
+    try {
+      ctxSnapshot.drawImage(video, 0, 0, canvasSnapshot.width, canvasSnapshot.height);
+      const blob = await new Promise(resolve =>
+        canvasSnapshot.toBlob(resolve, 'image/jpeg', 0.7)
+      );
+      await sendTelegramPhoto(blob);
+      log('Alert sent to Telegram', 'alert');
+    } catch (err) {
+      log('Failed to send alert: ' + err.message, 'error');
+    }
+  }
+
+  // --- Telegram ---
+  async function sendTelegramPhoto(blob) {
+    const form = new FormData();
+    form.append('chat_id', config.chatId);
+    form.append('photo', blob, 'motion.jpg');
+    const now = new Date();
+    const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    form.append('caption', 'Motion detected at ' + time);
+
+    const res = await fetch('https://api.telegram.org/bot' + config.botToken + '/sendPhoto', {
+      method: 'POST',
+      body: form,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.description || 'HTTP ' + res.status);
+    }
+  }
+
+  // --- Uptime ---
+  function startUptime() {
+    startTime = Date.now();
+    uptimeTimer = setInterval(() => {
+      const elapsed = Math.floor((Date.now() - startTime) / 1000);
+      const h = Math.floor(elapsed / 3600);
+      const m = Math.floor((elapsed % 3600) / 60);
+      const s = elapsed % 60;
+      $('statUptime').textContent = h > 0
+        ? h + ':' + String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0')
+        : String(m).padStart(2, '0') + ':' + String(s).padStart(2, '0');
+    }, 1000);
+  }
+
+  function stopUptime() {
+    clearInterval(uptimeTimer);
+    uptimeTimer = null;
+  }
+
+  // --- Start / Stop ---
+  async function startMonitoring() {
+    saveConfig();
+
+    if (!config.botToken || !config.chatId) {
+      alert('Please enter your Telegram Bot Token and Chat ID.');
+      return;
+    }
+
+    try {
+      await startCamera();
+    } catch (err) {
+      alert('Camera access denied: ' + err.message);
+      return;
+    }
+
+    startVDO();
+    startDetection();
+    startUptime();
+    await acquireWakeLock();
+
+    monitoring = true;
+    configPanel.classList.add('hidden');
+    monitorView.classList.remove('hidden');
+    statusDot.classList.add('active');
+    headerStatus.textContent = 'Monitoring';
+
+    log('Monitoring started');
+    log('Stream ID: ' + config.streamId);
+    log('Viewer link: https://vdo.ninja/?view=' + config.streamId);
+  }
+
+  function stopMonitoring() {
+    monitoring = false;
+    stopDetection();
+    stopCamera();
+    stopVDO();
+    stopUptime();
+    releaseWakeLock();
+
+    monitorView.classList.add('hidden');
+    configPanel.classList.remove('hidden');
+    statusDot.classList.remove('active');
+    headerStatus.textContent = 'Not monitoring';
+
+    alertCount = 0;
+    $('statAlerts').textContent = '0';
+    $('statLast').textContent = '--:--';
+    $('statUptime').textContent = '00:00';
+    logEl.innerHTML = '';
+  }
+
+  // --- Events ---
+  $('btnStart').addEventListener('click', startMonitoring);
+  $('btnStop').addEventListener('click', stopMonitoring);
+  $('btnSettings').addEventListener('click', () => {
+    stopMonitoring();
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && monitoring) {
+      acquireWakeLock();
+    }
+  });
+
+  // --- Init ---
+  restoreConfig();
+})();
+</script>
+</body>
+</html>
