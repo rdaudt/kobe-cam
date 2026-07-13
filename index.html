@@ -31,7 +31,6 @@
     flex-direction: column;
   }
 
-  /* --- Header --- */
   .header {
     display: flex;
     align-items: center;
@@ -47,13 +46,11 @@
     margin-right: 8px;
   }
   .header .status-dot.active { background: var(--accent); animation: pulse 2s infinite; }
-  .header .status-dot.error { background: var(--danger); }
   @keyframes pulse {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.4; }
   }
 
-  /* --- Config Panel --- */
   .config-panel {
     padding: 20px 16px;
     flex: 1;
@@ -114,7 +111,6 @@
     border: 1px solid var(--border);
   }
 
-  /* --- Monitor View --- */
   .monitor-view {
     flex: 1;
     display: flex;
@@ -132,12 +128,6 @@
     width: 100%;
     display: block;
   }
-  .camera-container iframe {
-    width: 100%;
-    aspect-ratio: 3/4;
-    border: none;
-    display: block;
-  }
   .camera-container .motion-indicator {
     position: absolute;
     top: 12px; right: 12px;
@@ -153,6 +143,21 @@
   .camera-container .motion-indicator.active {
     background: rgba(239,68,68,0.8);
     color: #fff;
+  }
+  .camera-container .stream-badge {
+    position: absolute;
+    top: 12px; left: 12px;
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 600;
+    background: rgba(0,0,0,0.6);
+    color: var(--text-dim);
+    backdrop-filter: blur(8px);
+    z-index: 10;
+  }
+  .camera-container .stream-badge.live {
+    color: var(--accent);
   }
 
   .stats-bar {
@@ -209,7 +214,6 @@
 </head>
 <body>
 
-<!-- Header -->
 <div class="header">
   <div style="display:flex;align-items:center;">
     <span class="status-dot" id="statusDot"></span>
@@ -218,7 +222,6 @@
   <span id="headerStatus" style="font-size:13px;color:var(--text-dim);">Not monitoring</span>
 </div>
 
-<!-- Config Panel -->
 <div class="config-panel" id="configPanel">
   <div class="field">
     <label>Stream ID</label>
@@ -238,8 +241,8 @@
   <div class="field">
     <label>Camera</label>
     <select id="cfgCamera">
-      <option value="1">Back camera</option>
-      <option value="0">Front camera</option>
+      <option value="environment">Back camera</option>
+      <option value="user">Front camera</option>
     </select>
   </div>
   <div class="field">
@@ -253,10 +256,11 @@
   <button class="btn btn-primary" id="btnStart">Start Monitoring</button>
 </div>
 
-<!-- Monitor View -->
 <div class="monitor-view hidden" id="monitorView">
-  <div class="camera-container" id="cameraContainer">
+  <div class="camera-container">
+    <video id="video" autoplay playsinline muted></video>
     <div class="motion-indicator" id="motionBadge">Calm</div>
+    <div class="stream-badge" id="streamBadge">Stream: connecting...</div>
   </div>
   <div class="stats-bar">
     <div class="stat">
@@ -279,27 +283,28 @@
   </div>
 </div>
 
-<!-- Offscreen canvases for motion detection -->
 <canvas id="canvasCurrent" style="display:none;"></canvas>
 <canvas id="canvasPrevious" style="display:none;"></canvas>
 <canvas id="canvasSnapshot" style="display:none;"></canvas>
+
+<!-- VDO.Ninja SDK — loaded from CDN, no iframe needed -->
+<script src="https://cdn.jsdelivr.net/gh/steveseguin/ninjasdk@latest/vdoninja-sdk.min.js"></script>
 
 <script>
 (function() {
   'use strict';
 
-  // --- Config ---
   const COOLDOWN_MS = 30000;
-  const FRAME_POLL_MS = 500;
+  const DETECTION_INTERVAL_MS = 500;
   const CANVAS_WIDTH = 320;
   const CANVAS_HEIGHT = 240;
   const PIXEL_DIFF_THRESHOLD = 30;
 
-  // --- State ---
   let config = loadConfig();
   let monitoring = false;
-  let vdoIframe = null;
-  let framePollTimer = null;
+  let stream = null;
+  let vdo = null;
+  let detectionTimer = null;
   let previousImageData = null;
   let lastAlertTime = 0;
   let alertCount = 0;
@@ -307,31 +312,23 @@
   let uptimeTimer = null;
   let wakeLockSentinel = null;
   let noSleepVideo = null;
-  let frameImg = new Image();
-  let pendingFrame = false;
 
-  // --- DOM ---
   const $ = (id) => document.getElementById(id);
-  const configPanel = $('configPanel');
-  const monitorView = $('monitorView');
+  const video = $('video');
   const motionBadge = $('motionBadge');
+  const streamBadge = $('streamBadge');
   const statusDot = $('statusDot');
   const headerStatus = $('headerStatus');
-  const cameraContainer = $('cameraContainer');
   const canvasCurrent = $('canvasCurrent');
-  const canvasPrevious = $('canvasPrevious');
   const canvasSnapshot = $('canvasSnapshot');
   const ctxCurrent = canvasCurrent.getContext('2d', { willReadFrequently: true });
-  const ctxPrevious = canvasPrevious.getContext('2d', { willReadFrequently: true });
   const ctxSnapshot = canvasSnapshot.getContext('2d');
   const logEl = $('log');
 
-  canvasCurrent.width = canvasPrevious.width = CANVAS_WIDTH;
-  canvasCurrent.height = canvasPrevious.height = CANVAS_HEIGHT;
-  canvasSnapshot.width = 640;
-  canvasSnapshot.height = 480;
+  canvasCurrent.width = CANVAS_WIDTH;
+  canvasCurrent.height = CANVAS_HEIGHT;
 
-  // --- Config persistence ---
+  // --- Config ---
   function loadConfig() {
     try {
       return JSON.parse(localStorage.getItem('kobecam-config')) || {};
@@ -356,7 +353,7 @@
     $('cfgStreamId').value = config.streamId || '';
     $('cfgBotToken').value = config.botToken || '';
     $('cfgChatId').value = config.chatId || '';
-    $('cfgCamera').value = config.camera || '1';
+    $('cfgCamera').value = config.camera || 'environment';
     $('cfgSensitivity').value = String(config.sensitivity || 5);
   }
 
@@ -399,80 +396,94 @@
     if (noSleepVideo) { noSleepVideo.pause(); noSleepVideo = null; }
   }
 
-  // --- VDO.Ninja (visible iframe — owns the camera and streams) ---
-  function startVDO() {
-    if (vdoIframe) vdoIframe.remove();
-
-    vdoIframe = document.createElement('iframe');
-    vdoIframe.allow = 'camera;microphone;autoplay;display-capture';
-    vdoIframe.setAttribute('allowfullscreen', '');
-
-    const facing = config.camera === '0' ? '&facing=user' : '&facing=environment';
-    vdoIframe.src = 'https://vdo.ninja/?push=' + encodeURIComponent(config.streamId)
-      + '&webcam&autostart&cleanoutput&quality=1&bitrate=1500'
-      + '&label=KobeCam' + facing;
-
-    cameraContainer.prepend(vdoIframe);
-    log('VDO.Ninja stream starting...');
-    log('Stream ID: ' + config.streamId);
-    log('Viewer: https://vdo.ninja/?view=' + config.streamId);
+  // --- Camera (getUserMedia — same stream used for preview, motion detection, AND VDO.Ninja) ---
+  async function startCamera() {
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: config.camera || 'environment' },
+      audio: false,
+    });
+    video.srcObject = stream;
+    await new Promise(resolve => { video.onloadedmetadata = resolve; });
+    canvasSnapshot.width = video.videoWidth;
+    canvasSnapshot.height = video.videoHeight;
   }
 
-  function stopVDO() {
-    if (vdoIframe) { vdoIframe.remove(); vdoIframe = null; }
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(t => t.stop());
+      stream = null;
+    }
+    video.srcObject = null;
   }
 
-  // --- Motion Detection via iframe API (getVideoFrame) ---
-  function startDetection() {
-    previousImageData = null;
-    pendingFrame = false;
-    window.addEventListener('message', onVDOMessage);
-    framePollTimer = setInterval(requestFrame, FRAME_POLL_MS);
-    log('Motion detection active');
-  }
-
-  function stopDetection() {
-    clearInterval(framePollTimer);
-    framePollTimer = null;
-    previousImageData = null;
-    window.removeEventListener('message', onVDOMessage);
-  }
-
-  function requestFrame() {
-    if (!vdoIframe || !vdoIframe.contentWindow || pendingFrame) return;
-    try {
-      pendingFrame = true;
-      vdoIframe.contentWindow.postMessage({ getVideoFrame: true }, '*');
-      // Timeout: if no response in 2s, unblock
-      setTimeout(() => { pendingFrame = false; }, 2000);
-    } catch { pendingFrame = false; }
-  }
-
-  function onVDOMessage(e) {
-    if (!e.data) return;
-
-    // VDO.Ninja responds with videoFrame (data URI)
-    if (e.data.videoFrame) {
-      pendingFrame = false;
-      frameImg.onload = function() {
-        processFrame(this);
-      };
-      frameImg.src = e.data.videoFrame;
+  // --- VDO.Ninja SDK (publishes the same getUserMedia stream — no iframe, no camera conflict) ---
+  async function startVDO() {
+    if (typeof VDONinjaSDK === 'undefined') {
+      log('VDO.Ninja SDK not loaded — live viewer will not work', 'error');
+      streamBadge.textContent = 'Stream: SDK failed';
       return;
     }
 
-    // Also handle raw dataURL format some versions use
-    if (typeof e.data === 'string' && e.data.startsWith('data:image')) {
-      pendingFrame = false;
-      frameImg.onload = function() {
-        processFrame(this);
-      };
-      frameImg.src = e.data;
+    const room = config.streamId;
+    const streamID = config.streamId;
+
+    try {
+      vdo = new VDONinjaSDK({
+        room: room,
+        salt: 'vdo.ninja',
+      });
+
+      vdo.addEventListener('connected', () => {
+        streamBadge.textContent = 'Stream: live';
+        streamBadge.classList.add('live');
+        log('VDO.Ninja connected — viewers can join', 'alert');
+      });
+
+      vdo.addEventListener('viewerConnected', () => {
+        log('A viewer connected', 'alert');
+      });
+
+      vdo.addEventListener('viewerDisconnected', () => {
+        log('A viewer disconnected');
+      });
+
+      await vdo.connect();
+      await vdo.joinRoom({ room });
+      await vdo.publish(stream, { streamID });
+
+      const viewLink = 'https://vdo.ninja/?room=' + encodeURIComponent(room) + '&view=' + encodeURIComponent(streamID) + '&scene';
+      log('Viewer link: ' + viewLink);
+    } catch (err) {
+      log('VDO.Ninja error: ' + err.message, 'error');
+      streamBadge.textContent = 'Stream: error';
     }
   }
 
-  function processFrame(img) {
-    ctxCurrent.drawImage(img, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
+  function stopVDO() {
+    if (vdo) {
+      vdo.disconnect();
+      vdo = null;
+    }
+    streamBadge.textContent = 'Stream: off';
+    streamBadge.classList.remove('live');
+  }
+
+  // --- Motion Detection (reads directly from the <video> element — same-origin, no iframe) ---
+  function startDetection() {
+    previousImageData = null;
+    detectionTimer = setInterval(detectMotion, DETECTION_INTERVAL_MS);
+  }
+
+  function stopDetection() {
+    clearInterval(detectionTimer);
+    detectionTimer = null;
+    previousImageData = null;
+  }
+
+  function detectMotion() {
+    if (!video.videoWidth) return;
+
+    ctxCurrent.drawImage(video, 0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
     const currentData = ctxCurrent.getImageData(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT);
 
     if (!previousImageData) {
@@ -499,14 +510,14 @@
     const sensitivity = config.sensitivity || 5;
 
     if (changePercent > sensitivity) {
-      onMotionDetected(changePercent, img);
+      onMotionDetected(changePercent);
     } else {
       motionBadge.textContent = 'Calm';
       motionBadge.classList.remove('active');
     }
   }
 
-  async function onMotionDetected(changePercent, img) {
+  async function onMotionDetected(changePercent) {
     motionBadge.textContent = 'Motion ' + changePercent.toFixed(1) + '%';
     motionBadge.classList.add('active');
 
@@ -520,10 +531,7 @@
     log('Motion detected (' + changePercent.toFixed(1) + '% change)', 'motion');
 
     try {
-      // Use the frame image for the snapshot (full resolution from VDO.Ninja)
-      canvasSnapshot.width = img.naturalWidth || 640;
-      canvasSnapshot.height = img.naturalHeight || 480;
-      ctxSnapshot.drawImage(img, 0, 0);
+      ctxSnapshot.drawImage(video, 0, 0, canvasSnapshot.width, canvasSnapshot.height);
       const blob = await new Promise(resolve =>
         canvasSnapshot.toBlob(resolve, 'image/jpeg', 0.7)
       );
@@ -582,29 +590,38 @@
       return;
     }
 
-    startVDO();
+    try {
+      await startCamera();
+    } catch (err) {
+      alert('Camera access denied: ' + err.message);
+      return;
+    }
+
+    $('configPanel').classList.add('hidden');
+    $('monitorView').classList.remove('hidden');
+    statusDot.classList.add('active');
+    headerStatus.textContent = 'Monitoring';
+    monitoring = true;
+
+    log('Monitoring started');
+    log('Stream ID: ' + config.streamId);
+
     startDetection();
     startUptime();
     await acquireWakeLock();
-
-    monitoring = true;
-    configPanel.classList.add('hidden');
-    monitorView.classList.remove('hidden');
-    statusDot.classList.add('active');
-    headerStatus.textContent = 'Monitoring';
-
-    log('Monitoring started');
+    await startVDO();
   }
 
   function stopMonitoring() {
     monitoring = false;
     stopDetection();
     stopVDO();
+    stopCamera();
     stopUptime();
     releaseWakeLock();
 
-    monitorView.classList.add('hidden');
-    configPanel.classList.remove('hidden');
+    $('monitorView').classList.add('hidden');
+    $('configPanel').classList.remove('hidden');
     statusDot.classList.remove('active');
     headerStatus.textContent = 'Not monitoring';
 
@@ -615,12 +632,9 @@
     logEl.innerHTML = '';
   }
 
-  // --- Events ---
   $('btnStart').addEventListener('click', startMonitoring);
   $('btnStop').addEventListener('click', stopMonitoring);
-  $('btnSettings').addEventListener('click', () => {
-    stopMonitoring();
-  });
+  $('btnSettings').addEventListener('click', () => { stopMonitoring(); });
 
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && monitoring) {
@@ -628,7 +642,6 @@
     }
   });
 
-  // --- Init ---
   restoreConfig();
 })();
 </script>

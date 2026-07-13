@@ -141,7 +141,7 @@
   function connect(streamId) {
     if (!streamId) { alert('Enter a Stream ID'); return; }
     localStorage.setItem('kobecam-viewer-id', streamId);
-    frame.src = 'https://vdo.ninja/?view=' + encodeURIComponent(streamId) + '&autoplay&cleanoutput';
+    frame.src = 'https://vdo.ninja/?room=' + encodeURIComponent(streamId) + '&view=' + encodeURIComponent(streamId) + '&scene&autoplay&cleanoutput';
     label.textContent = streamId;
     setup.classList.add('hidden');
     viewer.classList.remove('hidden');
