@@ -14,6 +14,7 @@
     --text: #e4e4e7;
     --text-dim: #71717a;
     --accent: #22c55e;
+    --danger: #ef4444;
     --radius: 10px;
   }
   body {
@@ -32,6 +33,13 @@
     border-bottom: 1px solid var(--border);
   }
   .header h1 { font-size: 18px; font-weight: 600; }
+  .status {
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .status.connected { color: var(--accent); }
+  .status.error { color: var(--danger); }
+
   .setup {
     flex: 1;
     display: flex;
@@ -65,6 +73,11 @@
     outline: none;
   }
   .setup input:focus { border-color: var(--accent); }
+  .setup .hint {
+    font-size: 12px;
+    color: var(--text-dim);
+    width: 100%;
+  }
   .btn {
     display: block;
     width: 100%;
@@ -78,50 +91,71 @@
     color: #000;
   }
   .btn:active { opacity: 0.8; }
+
   .viewer {
     flex: 1;
     display: flex;
     flex-direction: column;
+    background: #000;
   }
   .viewer.hidden { display: none; }
-  .viewer iframe {
+  .viewer video {
     flex: 1;
     width: 100%;
-    border: none;
+    object-fit: contain;
+    background: #000;
   }
   .viewer-footer {
     padding: 10px 16px;
     border-top: 1px solid var(--border);
     text-align: center;
+    background: var(--bg);
   }
   .viewer-footer a {
     color: var(--text-dim);
     font-size: 13px;
     cursor: pointer;
+    text-decoration: none;
   }
+  .viewer-footer a:hover { color: var(--text); }
+
+  .connecting-msg {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 15px;
+  }
+  .connecting-msg.hidden { display: none; }
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>Kobe-Cam Viewer</h1>
-  <span id="streamLabel" style="font-size:13px;color:var(--text-dim);"></span>
+  <span class="status" id="status"></span>
 </div>
 
 <div class="setup" id="setup">
   <div style="width:100%;">
     <label>Stream ID</label>
-    <input type="text" id="inputStreamId" placeholder="e.g. kobe-cam-123">
+    <input type="text" id="inputStreamId" placeholder="e.g. kobecam123">
   </div>
-  <button class="btn" id="btnConnect">Connect</button>
+  <div class="hint">Enter the same Stream ID configured on the pet station.</div>
+  <button class="btn" id="btnConnect">Watch Live</button>
 </div>
 
+<div class="connecting-msg hidden" id="connectingMsg">Connecting to pet station...</div>
+
 <div class="viewer hidden" id="viewer">
-  <iframe id="vdoFrame" allow="autoplay;fullscreen"></iframe>
+  <video id="remoteVideo" autoplay playsinline></video>
   <div class="viewer-footer">
     <a id="btnDisconnect">Disconnect</a>
   </div>
 </div>
+
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <script>
 (function() {
@@ -130,31 +164,101 @@
   const params = new URLSearchParams(window.location.search);
   const presetId = params.get('id') || '';
 
-  const setup = document.getElementById('setup');
-  const viewer = document.getElementById('viewer');
+  const setupEl = document.getElementById('setup');
+  const viewerEl = document.getElementById('viewer');
+  const connectingEl = document.getElementById('connectingMsg');
   const input = document.getElementById('inputStreamId');
-  const frame = document.getElementById('vdoFrame');
-  const label = document.getElementById('streamLabel');
+  const remoteVideo = document.getElementById('remoteVideo');
+  const statusEl = document.getElementById('status');
+
+  let peer = null;
+  let currentCall = null;
+  let retryTimeout = null;
 
   input.value = presetId || localStorage.getItem('kobecam-viewer-id') || '';
 
+  function setStatus(text, cls) {
+    statusEl.textContent = text;
+    statusEl.className = 'status' + (cls ? ' ' + cls : '');
+  }
+
   function connect(streamId) {
     if (!streamId) { alert('Enter a Stream ID'); return; }
+    streamId = streamId.replace(/[^a-zA-Z0-9]/g, '');
     localStorage.setItem('kobecam-viewer-id', streamId);
-    var cleanId = streamId.replace(/[^a-zA-Z0-9]/g, '');
-    frame.src = 'https://vdo.ninja/?room=' + encodeURIComponent(cleanId) + '&view=' + encodeURIComponent(cleanId) + '&scene&autoplay&cleanoutput';
-    label.textContent = streamId;
-    setup.classList.add('hidden');
-    viewer.classList.remove('hidden');
+
+    setupEl.classList.add('hidden');
+    connectingEl.classList.remove('hidden');
+    setStatus('Connecting...', '');
+
+    var peerId = 'kobecam-' + streamId;
+
+    peer = new Peer();
+
+    peer.on('open', function() {
+      var call = peer.call(peerId, new MediaStream());
+      currentCall = call;
+
+      call.on('stream', function(remoteStream) {
+        connectingEl.classList.add('hidden');
+        viewerEl.classList.remove('hidden');
+        remoteVideo.srcObject = remoteStream;
+        setStatus('Live', 'connected');
+      });
+
+      call.on('close', function() {
+        setStatus('Disconnected', 'error');
+        scheduleRetry(streamId);
+      });
+
+      call.on('error', function(err) {
+        setStatus('Error: ' + err.message, 'error');
+        scheduleRetry(streamId);
+      });
+    });
+
+    peer.on('error', function(err) {
+      if (err.type === 'peer-unavailable') {
+        setStatus('Pet station offline', 'error');
+        connectingEl.querySelector ? null : null;
+        scheduleRetry(streamId);
+      } else {
+        setStatus('Error: ' + err.message, 'error');
+        scheduleRetry(streamId);
+      }
+    });
+
+    peer.on('disconnected', function() {
+      if (currentCall) {
+        setStatus('Reconnecting...', '');
+        peer.reconnect();
+      }
+    });
+  }
+
+  function scheduleRetry(streamId) {
+    clearTimeout(retryTimeout);
+    retryTimeout = setTimeout(function() {
+      if (peer) { peer.destroy(); peer = null; }
+      setStatus('Retrying...', '');
+      connect(streamId);
+    }, 5000);
   }
 
   function disconnect() {
-    frame.src = '';
-    viewer.classList.add('hidden');
-    setup.classList.remove('hidden');
+    clearTimeout(retryTimeout);
+    if (currentCall) { currentCall.close(); currentCall = null; }
+    if (peer) { peer.destroy(); peer = null; }
+    remoteVideo.srcObject = null;
+    viewerEl.classList.add('hidden');
+    connectingEl.classList.add('hidden');
+    setupEl.classList.remove('hidden');
+    setStatus('', '');
   }
 
-  document.getElementById('btnConnect').addEventListener('click', () => connect(input.value.trim()));
+  document.getElementById('btnConnect').addEventListener('click', function() {
+    connect(input.value.trim());
+  });
   document.getElementById('btnDisconnect').addEventListener('click', disconnect);
 
   if (presetId) connect(presetId);

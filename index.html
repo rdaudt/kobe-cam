@@ -16,7 +16,6 @@
     --text: #e4e4e7;
     --text-dim: #71717a;
     --accent: #22c55e;
-    --accent-dim: #16a34a;
     --danger: #ef4444;
     --warn: #f59e0b;
     --radius: 10px;
@@ -82,9 +81,7 @@
     font-size: 16px;
     outline: none;
   }
-  .field input:focus, .field select:focus {
-    border-color: var(--accent);
-  }
+  .field input:focus, .field select:focus { border-color: var(--accent); }
   .field .hint {
     font-size: 12px;
     color: var(--text-dim);
@@ -128,9 +125,8 @@
     width: 100%;
     display: block;
   }
-  .camera-container .motion-indicator {
+  .badge {
     position: absolute;
-    top: 12px; right: 12px;
     padding: 4px 10px;
     border-radius: 20px;
     font-size: 12px;
@@ -140,25 +136,14 @@
     backdrop-filter: blur(8px);
     z-index: 10;
   }
-  .camera-container .motion-indicator.active {
+  .motion-indicator { top: 12px; right: 12px; }
+  .motion-indicator.active {
     background: rgba(239,68,68,0.8);
     color: #fff;
   }
-  .camera-container .stream-badge {
-    position: absolute;
-    top: 12px; left: 12px;
-    padding: 4px 10px;
-    border-radius: 20px;
-    font-size: 11px;
-    font-weight: 600;
-    background: rgba(0,0,0,0.6);
-    color: var(--text-dim);
-    backdrop-filter: blur(8px);
-    z-index: 10;
-  }
-  .camera-container .stream-badge.live {
-    color: var(--accent);
-  }
+  .stream-badge { top: 12px; left: 12px; }
+  .stream-badge.live { color: var(--accent); }
+  .stream-badge.viewers { color: var(--accent); }
 
   .stats-bar {
     display: grid;
@@ -225,8 +210,8 @@
 <div class="config-panel" id="configPanel">
   <div class="field">
     <label>Stream ID</label>
-    <input type="text" id="cfgStreamId" placeholder="e.g. kobe-cam-123">
-    <div class="hint">Unique ID for the VDO.Ninja stream. Share this with viewers.</div>
+    <input type="text" id="cfgStreamId" placeholder="e.g. kobecam123">
+    <div class="hint">Unique ID for live streaming. Share with viewers. Letters and numbers only.</div>
   </div>
   <div class="field">
     <label>Telegram Bot Token</label>
@@ -259,8 +244,8 @@
 <div class="monitor-view hidden" id="monitorView">
   <div class="camera-container">
     <video id="video" autoplay playsinline muted></video>
-    <div class="motion-indicator" id="motionBadge">Calm</div>
-    <div class="stream-badge" id="streamBadge">Stream: connecting...</div>
+    <div class="badge motion-indicator" id="motionBadge">Calm</div>
+    <div class="badge stream-badge" id="streamBadge">Stream: connecting...</div>
   </div>
   <div class="stats-bar">
     <div class="stat">
@@ -284,11 +269,10 @@
 </div>
 
 <canvas id="canvasCurrent" style="display:none;"></canvas>
-<canvas id="canvasPrevious" style="display:none;"></canvas>
 <canvas id="canvasSnapshot" style="display:none;"></canvas>
 
-<!-- VDO.Ninja SDK — loaded from CDN, no iframe needed -->
-<script src="https://cdn.jsdelivr.net/gh/steveseguin/ninjasdk@latest/vdoninja-sdk.min.js"></script>
+<!-- PeerJS for P2P streaming — simple, free signaling, no rooms/passwords -->
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <script>
 (function() {
@@ -303,7 +287,8 @@
   let config = loadConfig();
   let monitoring = false;
   let stream = null;
-  let vdo = null;
+  let peer = null;
+  let viewerCount = 0;
   let detectionTimer = null;
   let previousImageData = null;
   let lastAlertTime = 0;
@@ -328,16 +313,14 @@
   canvasCurrent.width = CANVAS_WIDTH;
   canvasCurrent.height = CANVAS_HEIGHT;
 
-  // --- Config ---
   function loadConfig() {
-    try {
-      return JSON.parse(localStorage.getItem('kobecam-config')) || {};
-    } catch { return {}; }
+    try { return JSON.parse(localStorage.getItem('kobecam-config')) || {}; }
+    catch { return {}; }
   }
 
   function saveConfig() {
     config = {
-      streamId: $('cfgStreamId').value.trim(),
+      streamId: $('cfgStreamId').value.trim().replace(/[^a-zA-Z0-9]/g, ''),
       botToken: $('cfgBotToken').value.trim(),
       chatId: $('cfgChatId').value.trim(),
       camera: $('cfgCamera').value,
@@ -348,7 +331,7 @@
 
   function restoreConfig() {
     if (!config.streamId) {
-      config.streamId = 'kobe' + Math.random().toString(36).substring(2, 8);
+      config.streamId = 'kobecam' + Math.random().toString(36).substring(2, 8);
     }
     $('cfgStreamId').value = config.streamId || '';
     $('cfgBotToken').value = config.botToken || '';
@@ -357,7 +340,6 @@
     $('cfgSensitivity').value = String(config.sensitivity || 5);
   }
 
-  // --- Logging ---
   function log(msg, type = '') {
     const entry = document.createElement('div');
     entry.className = 'log-entry' + (type ? ' ' + type : '');
@@ -366,6 +348,16 @@
     entry.innerHTML = '<span class="time">' + time + '</span>' + msg;
     logEl.prepend(entry);
     if (logEl.children.length > 100) logEl.lastChild.remove();
+  }
+
+  function updateViewerBadge() {
+    if (viewerCount > 0) {
+      streamBadge.textContent = viewerCount + ' viewer' + (viewerCount > 1 ? 's' : '');
+      streamBadge.className = 'badge stream-badge viewers';
+    } else {
+      streamBadge.textContent = 'Stream: ready';
+      streamBadge.className = 'badge stream-badge live';
+    }
   }
 
   // --- Wake Lock ---
@@ -396,7 +388,7 @@
     if (noSleepVideo) { noSleepVideo.pause(); noSleepVideo = null; }
   }
 
-  // --- Camera (getUserMedia — same stream used for preview, motion detection, AND VDO.Ninja) ---
+  // --- Camera ---
   async function startCamera() {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: config.camera || 'environment' },
@@ -416,59 +408,70 @@
     video.srcObject = null;
   }
 
-  // --- VDO.Ninja SDK (publishes the same getUserMedia stream — no iframe, no camera conflict) ---
-  async function startVDO() {
-    if (typeof VDONinjaSDK === 'undefined') {
-      log('VDO.Ninja SDK not loaded — live viewer will not work', 'error');
-      streamBadge.textContent = 'Stream: SDK failed';
+  // --- PeerJS Streaming ---
+  function startPeer() {
+    if (typeof Peer === 'undefined') {
+      log('PeerJS not loaded — live viewer unavailable', 'error');
+      streamBadge.textContent = 'Stream: unavailable';
       return;
     }
 
-    const room = config.streamId.replace(/[^a-zA-Z0-9]/g, '');
-    const streamID = room;
+    const peerId = 'kobecam-' + config.streamId;
 
-    try {
-      vdo = new VDONinjaSDK({
-        room: room,
-        salt: 'vdo.ninja',
+    peer = new Peer(peerId);
+
+    peer.on('open', (id) => {
+      streamBadge.textContent = 'Stream: ready';
+      streamBadge.className = 'badge stream-badge live';
+      log('Live stream ready — waiting for viewers');
+
+      var origin = window.location.origin;
+      var path = window.location.pathname.replace(/index\.html$/, '');
+      log('Viewer link: ' + origin + path + 'viewer.html?id=' + config.streamId);
+    });
+
+    peer.on('call', (call) => {
+      call.answer(stream);
+      viewerCount++;
+      updateViewerBadge();
+      log('Viewer connected (' + viewerCount + ' total)', 'alert');
+
+      call.on('close', () => {
+        viewerCount = Math.max(0, viewerCount - 1);
+        updateViewerBadge();
+        log('Viewer disconnected (' + viewerCount + ' remaining)');
       });
+    });
 
-      vdo.addEventListener('connected', () => {
-        streamBadge.textContent = 'Stream: live';
-        streamBadge.classList.add('live');
-        log('VDO.Ninja connected — viewers can join', 'alert');
-      });
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        log('Stream ID "' + config.streamId + '" is already in use. Choose another.', 'error');
+        streamBadge.textContent = 'Stream: ID taken';
+      } else {
+        log('Stream error: ' + err.message, 'error');
+        streamBadge.textContent = 'Stream: error';
+      }
+    });
 
-      vdo.addEventListener('viewerConnected', () => {
-        log('A viewer connected', 'alert');
-      });
-
-      vdo.addEventListener('viewerDisconnected', () => {
-        log('A viewer disconnected');
-      });
-
-      await vdo.connect();
-      await vdo.joinRoom({ room });
-      await vdo.publish(stream, { streamID });
-
-      const viewLink = 'https://vdo.ninja/?room=' + encodeURIComponent(room) + '&view=' + encodeURIComponent(streamID) + '&scene';
-      log('Viewer link: ' + viewLink);
-    } catch (err) {
-      log('VDO.Ninja error: ' + err.message, 'error');
-      streamBadge.textContent = 'Stream: error';
-    }
+    peer.on('disconnected', () => {
+      if (monitoring) {
+        log('Reconnecting stream...');
+        peer.reconnect();
+      }
+    });
   }
 
-  function stopVDO() {
-    if (vdo) {
-      vdo.disconnect();
-      vdo = null;
+  function stopPeer() {
+    if (peer) {
+      peer.destroy();
+      peer = null;
     }
+    viewerCount = 0;
     streamBadge.textContent = 'Stream: off';
-    streamBadge.classList.remove('live');
+    streamBadge.className = 'badge stream-badge';
   }
 
-  // --- Motion Detection (reads directly from the <video> element — same-origin, no iframe) ---
+  // --- Motion Detection ---
   function startDetection() {
     previousImageData = null;
     detectionTimer = setInterval(detectMotion, DETECTION_INTERVAL_MS);
@@ -585,6 +588,10 @@
   async function startMonitoring() {
     saveConfig();
 
+    if (!config.streamId) {
+      alert('Please enter a Stream ID.');
+      return;
+    }
     if (!config.botToken || !config.chatId) {
       alert('Please enter your Telegram Bot Token and Chat ID.');
       return;
@@ -604,18 +611,17 @@
     monitoring = true;
 
     log('Monitoring started');
-    log('Stream ID: ' + config.streamId);
 
     startDetection();
     startUptime();
+    startPeer();
     await acquireWakeLock();
-    await startVDO();
   }
 
   function stopMonitoring() {
     monitoring = false;
     stopDetection();
-    stopVDO();
+    stopPeer();
     stopCamera();
     stopUptime();
     releaseWakeLock();
