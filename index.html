@@ -348,7 +348,7 @@
 
   function restoreConfig() {
     if (!config.streamId) {
-      config.streamId = 'kobe-' + Math.random().toString(36).substring(2, 8);
+      config.streamId = 'kobe' + Math.random().toString(36).substring(2, 8);
     }
     $('cfgStreamId').value = config.streamId || '';
     $('cfgBotToken').value = config.botToken || '';
@@ -424,8 +424,8 @@
       return;
     }
 
-    const room = config.streamId;
-    const streamID = config.streamId;
+    const room = config.streamId.replace(/[^a-zA-Z0-9]/g, '');
+    const streamID = room;
 
     try {
       vdo = new VDONinjaSDK({
