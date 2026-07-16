@@ -14,7 +14,6 @@
     --text: #e4e4e7;
     --text-dim: #71717a;
     --accent: #22c55e;
-    --danger: #ef4444;
     --radius: 10px;
   }
   body {
@@ -33,12 +32,10 @@
     border-bottom: 1px solid var(--border);
   }
   .header h1 { font-size: 18px; font-weight: 600; }
-  .status {
+  .header .stream-label {
     font-size: 13px;
     color: var(--text-dim);
   }
-  .status.connected { color: var(--accent); }
-  .status.error { color: var(--danger); }
 
   .setup {
     flex: 1;
@@ -99,10 +96,10 @@
     background: #000;
   }
   .viewer.hidden { display: none; }
-  .viewer video {
+  .viewer iframe {
     flex: 1;
     width: 100%;
-    object-fit: contain;
+    border: none;
     background: #000;
   }
   .viewer-footer {
@@ -118,23 +115,13 @@
     text-decoration: none;
   }
   .viewer-footer a:hover { color: var(--text); }
-
-  .connecting-msg {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-dim);
-    font-size: 15px;
-  }
-  .connecting-msg.hidden { display: none; }
 </style>
 </head>
 <body>
 
 <div class="header">
   <h1>Kobe-Cam Viewer</h1>
-  <span class="status" id="status"></span>
+  <span class="stream-label" id="streamLabel"></span>
 </div>
 
 <div class="setup" id="setup">
@@ -146,16 +133,12 @@
   <button class="btn" id="btnConnect">Watch Live</button>
 </div>
 
-<div class="connecting-msg hidden" id="connectingMsg">Connecting to pet station...</div>
-
 <div class="viewer hidden" id="viewer">
-  <video id="remoteVideo" autoplay playsinline></video>
+  <iframe id="vdoFrame" allow="autoplay;fullscreen"></iframe>
   <div class="viewer-footer">
     <a id="btnDisconnect">Disconnect</a>
   </div>
 </div>
-
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 
 <script>
 (function() {
@@ -166,109 +149,29 @@
 
   const setupEl = document.getElementById('setup');
   const viewerEl = document.getElementById('viewer');
-  const connectingEl = document.getElementById('connectingMsg');
   const input = document.getElementById('inputStreamId');
-  const remoteVideo = document.getElementById('remoteVideo');
-  const statusEl = document.getElementById('status');
-
-  let peer = null;
-  let currentCall = null;
-  let retryTimeout = null;
+  const frame = document.getElementById('vdoFrame');
+  const label = document.getElementById('streamLabel');
 
   input.value = presetId || localStorage.getItem('kobecam-viewer-id') || '';
-
-  function setStatus(text, cls) {
-    statusEl.textContent = text;
-    statusEl.className = 'status' + (cls ? ' ' + cls : '');
-  }
 
   function connect(streamId) {
     if (!streamId) { alert('Enter a Stream ID'); return; }
     streamId = streamId.replace(/[^a-zA-Z0-9]/g, '');
     localStorage.setItem('kobecam-viewer-id', streamId);
 
+    frame.src = 'https://vdo.ninja/?view=' + encodeURIComponent(streamId)
+      + '&password=false&autoplay&cleanoutput';
+    label.textContent = streamId;
     setupEl.classList.add('hidden');
-    connectingEl.classList.remove('hidden');
-    setStatus('Connecting...', '');
-
-    var peerId = 'kobecam-' + streamId;
-
-    peer = new Peer(undefined, {
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        ]
-      }
-    });
-
-    peer.on('open', function() {
-      var ctx = new AudioContext();
-      var oscillator = ctx.createOscillator();
-      var dst = ctx.createMediaStreamDestination();
-      oscillator.connect(dst);
-      oscillator.start();
-      var dummyStream = dst.stream;
-      dummyStream.getAudioTracks().forEach(function(t) { t.enabled = false; });
-
-      var call = peer.call(peerId, dummyStream);
-      currentCall = call;
-
-      call.on('stream', function(remoteStream) {
-        connectingEl.classList.add('hidden');
-        viewerEl.classList.remove('hidden');
-        remoteVideo.srcObject = remoteStream;
-        setStatus('Live', 'connected');
-      });
-
-      call.on('close', function() {
-        setStatus('Disconnected', 'error');
-        scheduleRetry(streamId);
-      });
-
-      call.on('error', function(err) {
-        setStatus('Error: ' + err.message, 'error');
-        scheduleRetry(streamId);
-      });
-    });
-
-    peer.on('error', function(err) {
-      if (err.type === 'peer-unavailable') {
-        setStatus('Pet station offline', 'error');
-        scheduleRetry(streamId);
-      } else {
-        setStatus('Error: ' + err.message, 'error');
-        scheduleRetry(streamId);
-      }
-    });
-
-    peer.on('disconnected', function() {
-      if (currentCall) {
-        setStatus('Reconnecting...', '');
-        peer.reconnect();
-      }
-    });
-  }
-
-  function scheduleRetry(streamId) {
-    clearTimeout(retryTimeout);
-    retryTimeout = setTimeout(function() {
-      if (peer) { peer.destroy(); peer = null; }
-      setStatus('Retrying...', '');
-      connect(streamId);
-    }, 5000);
+    viewerEl.classList.remove('hidden');
   }
 
   function disconnect() {
-    clearTimeout(retryTimeout);
-    if (currentCall) { currentCall.close(); currentCall = null; }
-    if (peer) { peer.destroy(); peer = null; }
-    remoteVideo.srcObject = null;
+    frame.src = '';
+    label.textContent = '';
     viewerEl.classList.add('hidden');
-    connectingEl.classList.add('hidden');
     setupEl.classList.remove('hidden');
-    setStatus('', '');
   }
 
   document.getElementById('btnConnect').addEventListener('click', function() {

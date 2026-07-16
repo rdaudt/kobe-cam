@@ -1,6 +1,6 @@
 # Kobe-Cam
 
-A zero-cost pet camera that turns an old iPhone into a motion-detecting pet monitor. Uses P2P WebRTC video streaming and a Telegram bot for instant motion alerts with snapshot photos.
+A zero-cost pet camera that turns an old iPhone into a motion-detecting pet monitor. Uses [VDO.Ninja](https://vdo.ninja/) for free P2P video streaming and a Telegram bot for instant motion alerts with snapshot photos.
 
 **No servers. No subscriptions. No dedicated hardware.**
 
@@ -16,7 +16,7 @@ Old iPhone (Safari)                    Your Phone
 └─────────────────────┘                 📸 + "Motion!"
 ```
 
-- The iPhone runs the **Pet Station** page in Safari — it streams video via PeerJS (P2P WebRTC) and monitors for motion locally
+- The iPhone runs the **Pet Station** page in Safari — it streams video via VDO.Ninja (P2P WebRTC) and monitors for motion locally
 - When motion is detected, it captures a snapshot and sends it to your **Telegram group** via bot API
 - Anyone in the group gets push notifications with the photo
 - Anyone with the viewer link can watch the live stream
@@ -69,14 +69,17 @@ Share this link with family:
 https://YOUR_USERNAME.github.io/kobe-cam/viewer.html?id=YOUR_STREAM_ID
 ```
 
-The viewer connects directly to the pet station via P2P WebRTC — no third-party viewer needed.
+Or watch directly on VDO.Ninja without our viewer page:
+```
+https://vdo.ninja/?view=YOUR_STREAM_ID&password=false
+```
 
 ## Features
 
 - **Motion detection** — runs on-device using canvas frame diffing, no cloud processing
 - **Telegram alerts with snapshots** — JPEG photo sent to your group on each motion event
 - **30-second cooldown** — prevents notification spam
-- **Live streaming** — P2P via PeerJS/WebRTC, near-zero latency
+- **Live streaming** — P2P via VDO.Ninja, near-zero latency
 - **Wake lock** — keeps the iPhone screen and camera active
 - **Configurable sensitivity** — high / medium / low thresholds
 - **Multi-viewer** — anyone with the stream ID can watch live
@@ -91,7 +94,7 @@ The viewer connects directly to the pet station via P2P WebRTC — no third-part
 ## Privacy & Security
 
 - Video streams are **peer-to-peer encrypted** (WebRTC DTLS-SRTP)
-- Signaling goes through PeerJS's free cloud server — only connection metadata, no video
+- Signaling goes through VDO.Ninja's free servers — only connection metadata, no video
 - Motion detection runs **entirely on-device** — no video is uploaded to any server
 - Only snapshot photos are sent to Telegram on motion events
 - Bot token and chat ID are stored in the iPhone's localStorage — never committed to the repo
@@ -102,7 +105,7 @@ The viewer connects directly to the pet station via P2P WebRTC — no third-part
 | File | Purpose |
 |------|---------|
 | `index.html` | Pet Station — camera, motion detection, Telegram alerts, P2P streaming |
-| `viewer.html` | Live viewer — connects via PeerJS/WebRTC |
+| `viewer.html` | Live viewer — embeds the VDO.Ninja stream |
 | `docs/PRD.md` | Product requirements document |
 
 ## License

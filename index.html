@@ -271,8 +271,8 @@
 <canvas id="canvasCurrent" style="display:none;"></canvas>
 <canvas id="canvasSnapshot" style="display:none;"></canvas>
 
-<!-- PeerJS for P2P streaming — simple, free signaling, no rooms/passwords -->
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<!-- VDO.Ninja SDK — publishes without iframe, so no camera conflict with motion detection -->
+<script src="https://cdn.jsdelivr.net/gh/steveseguin/ninjasdk@latest/vdoninja-sdk.min.js"></script>
 
 <script>
 (function() {
@@ -287,7 +287,7 @@
   let config = loadConfig();
   let monitoring = false;
   let stream = null;
-  let peer = null;
+  let vdo = null;
   let viewerCount = 0;
   let detectionTimer = null;
   let previousImageData = null;
@@ -355,7 +355,7 @@
       streamBadge.textContent = viewerCount + ' viewer' + (viewerCount > 1 ? 's' : '');
       streamBadge.className = 'badge stream-badge viewers';
     } else {
-      streamBadge.textContent = 'Stream: ready';
+      streamBadge.textContent = 'Stream: live';
       streamBadge.className = 'badge stream-badge live';
     }
   }
@@ -408,71 +408,59 @@
     video.srcObject = null;
   }
 
-  // --- PeerJS Streaming ---
-  function startPeer() {
-    if (typeof Peer === 'undefined') {
-      log('PeerJS not loaded — live viewer unavailable', 'error');
+  // --- VDO.Ninja Streaming (SDK, no room, no password — plain view URLs work) ---
+  async function startVDO() {
+    if (typeof VDONinjaSDK === 'undefined') {
+      log('VDO.Ninja SDK not loaded — live viewer unavailable', 'error');
       streamBadge.textContent = 'Stream: unavailable';
       return;
     }
 
-    const peerId = 'kobecam-' + config.streamId;
+    try {
+      vdo = new VDONinjaSDK({
+        salt: 'vdo.ninja',
+        password: false,
+      });
 
-    peer = new Peer(peerId, {
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'turn:openrelay.metered.ca:80', username: 'openrelayproject', credential: 'openrelayproject' },
-          { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', credential: 'openrelayproject' },
-        ]
-      }
-    });
+      vdo.addEventListener('viewerConnected', () => {
+        viewerCount++;
+        updateViewerBadge();
+        log('Viewer connected (' + viewerCount + ' total)', 'alert');
+      });
 
-    peer.on('open', (id) => {
-      streamBadge.textContent = 'Stream: ready';
+      vdo.addEventListener('viewerDisconnected', () => {
+        viewerCount = Math.max(0, viewerCount - 1);
+        updateViewerBadge();
+        log('Viewer disconnected (' + viewerCount + ' remaining)');
+      });
+
+      vdo.addEventListener('disconnected', () => {
+        if (monitoring) {
+          streamBadge.textContent = 'Stream: reconnecting...';
+          streamBadge.className = 'badge stream-badge';
+        }
+      });
+
+      await vdo.connect();
+      await vdo.publish(stream, { streamID: config.streamId });
+
+      streamBadge.textContent = 'Stream: live';
       streamBadge.className = 'badge stream-badge live';
       log('Live stream ready — waiting for viewers');
 
       var origin = window.location.origin;
       var path = window.location.pathname.replace(/index\.html$/, '');
       log('Viewer link: ' + origin + path + 'viewer.html?id=' + config.streamId);
-    });
-
-    peer.on('call', (call) => {
-      call.answer(stream);
-      viewerCount++;
-      updateViewerBadge();
-      log('Viewer connected (' + viewerCount + ' total)', 'alert');
-
-      call.on('close', () => {
-        viewerCount = Math.max(0, viewerCount - 1);
-        updateViewerBadge();
-        log('Viewer disconnected (' + viewerCount + ' remaining)');
-      });
-    });
-
-    peer.on('error', (err) => {
-      if (err.type === 'unavailable-id') {
-        log('Stream ID "' + config.streamId + '" is already in use. Choose another.', 'error');
-        streamBadge.textContent = 'Stream: ID taken';
-      } else {
-        log('Stream error: ' + err.message, 'error');
-        streamBadge.textContent = 'Stream: error';
-      }
-    });
-
-    peer.on('disconnected', () => {
-      if (monitoring) {
-        log('Reconnecting stream...');
-        peer.reconnect();
-      }
-    });
+    } catch (err) {
+      log('Stream error: ' + err.message, 'error');
+      streamBadge.textContent = 'Stream: error';
+    }
   }
 
-  function stopPeer() {
-    if (peer) {
-      peer.destroy();
-      peer = null;
+  function stopVDO() {
+    if (vdo) {
+      try { vdo.disconnect(); } catch {}
+      vdo = null;
     }
     viewerCount = 0;
     streamBadge.textContent = 'Stream: off';
@@ -622,14 +610,14 @@
 
     startDetection();
     startUptime();
-    startPeer();
     await acquireWakeLock();
+    await startVDO();
   }
 
   function stopMonitoring() {
     monitoring = false;
     stopDetection();
-    stopPeer();
+    stopVDO();
     stopCamera();
     stopUptime();
     releaseWakeLock();
