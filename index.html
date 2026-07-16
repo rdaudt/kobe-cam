@@ -548,7 +548,9 @@
     form.append('photo', blob, 'motion.jpg');
     const now = new Date();
     const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-    form.append('caption', 'Motion detected at ' + time);
+    const liveUrl = 'https://vdo.ninja/?view=' + config.streamId + '&password=false';
+    form.append('caption', 'Motion detected at ' + time + '\n\n<a href="' + liveUrl + '">Watch live</a>');
+    form.append('parse_mode', 'HTML');
 
     const res = await fetch('https://api.telegram.org/bot' + config.botToken + '/sendPhoto', {
       method: 'POST',
