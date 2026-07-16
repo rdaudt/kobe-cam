@@ -13,7 +13,7 @@ Old iPhone (Safari)                    Your Phone
 │  Motion detection   │               │  (optional)      │
 │  On motion:         │              └──────────────────┘
 │   snapshot → ───────│── Telegram ──► Family Group Chat
-└─────────────────────┘                 📸 + "Motion!"
+└─────────────────────┘                 📸 + "Motion!" + live link
 ```
 
 - The iPhone runs the **Pet Station** page in Safari — it streams video via VDO.Ninja (P2P WebRTC) and monitors for motion locally
@@ -54,7 +54,7 @@ Old iPhone (Safari)                    Your Phone
 ### 4. Start Monitoring
 
 1. Open `https://YOUR_USERNAME.github.io/kobe-cam/` on the old iPhone in Safari
-2. Enter your **Stream ID** (any name you choose, e.g., "kobe-123")
+2. Enter your **Stream ID** (letters and numbers only, e.g., "kobecam123" — a random one is pre-filled)
 3. Enter your **Telegram Bot Token** and **Chat ID**
 4. Choose back or front camera
 5. Tap **Start Monitoring**
@@ -77,7 +77,7 @@ https://vdo.ninja/?view=YOUR_STREAM_ID&password=false
 ## Features
 
 - **Motion detection** — runs on-device using canvas frame diffing, no cloud processing
-- **Telegram alerts with snapshots** — JPEG photo sent to your group on each motion event
+- **Telegram alerts with snapshots** — JPEG photo sent to your group on each motion event, with a one-tap "Watch live" link
 - **30-second cooldown** — prevents notification spam
 - **Live streaming** — P2P via VDO.Ninja, near-zero latency
 - **Wake lock** — keeps the iPhone screen and camera active
