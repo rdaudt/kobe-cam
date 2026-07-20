@@ -144,6 +144,50 @@
   .stream-badge { top: 12px; left: 12px; }
   .stream-badge.live { color: var(--accent); }
   .stream-badge.viewers { color: var(--accent); }
+  .sound-badge { bottom: 12px; right: 12px; }
+  .sound-badge.active {
+    background: rgba(245,158,11,0.85);
+    color: #000;
+  }
+
+  .meter-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  .meter-row.hidden { display: none; }
+  .meter-label {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    flex-shrink: 0;
+  }
+  .meter {
+    position: relative;
+    flex: 1;
+    height: 8px;
+    background: var(--surface);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+  .meter-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    border-radius: 4px;
+    transition: width 80ms linear;
+  }
+  .meter-fill.loud { background: var(--warn); }
+  .meter-threshold {
+    position: absolute;
+    top: -2px;
+    bottom: -2px;
+    width: 2px;
+    background: var(--text-dim);
+  }
 
   .stats-bar {
     display: grid;
@@ -238,6 +282,16 @@
       <option value="10">Low (10% pixel change)</option>
     </select>
   </div>
+  <div class="field">
+    <label>Sound Alerts</label>
+    <select id="cfgSoundSensitivity">
+      <option value="0">Off</option>
+      <option value="55">High — quiet whines and whimpers</option>
+      <option value="70" selected>Medium — barking</option>
+      <option value="82">Low — loud, sustained barking only</option>
+    </select>
+    <div class="hint">Watch the level meter while monitoring to calibrate. Needs microphone permission.</div>
+  </div>
   <button class="btn btn-primary" id="btnStart">Start Monitoring</button>
 </div>
 
@@ -246,6 +300,14 @@
     <video id="video" autoplay playsinline muted></video>
     <div class="badge motion-indicator" id="motionBadge">Calm</div>
     <div class="badge stream-badge" id="streamBadge">Stream: connecting...</div>
+    <div class="badge sound-badge" id="soundBadge">Quiet</div>
+  </div>
+  <div class="meter-row" id="meterRow">
+    <span class="meter-label">Sound</span>
+    <div class="meter">
+      <div class="meter-fill" id="meterFill"></div>
+      <div class="meter-threshold" id="meterThreshold"></div>
+    </div>
   </div>
   <div class="stats-bar">
     <div class="stat">
@@ -283,6 +345,13 @@
   const CANVAS_WIDTH = 320;
   const CANVAS_HEIGHT = 240;
   const PIXEL_DIFF_THRESHOLD = 30;
+  const AUDIO_INTERVAL_MS = 100;
+  const AUDIO_SUSTAIN_SAMPLES = 2;  // consecutive samples above threshold before firing
+  // Sound samples every 100ms but motion only every 500ms, so the first detector to
+  // trip would otherwise caption the alert alone. Pause briefly to let the other one
+  // weigh in, and count a trigger as active if it fired anywhere in the recent window.
+  const ALERT_COMPOSE_DELAY_MS = 700;
+  const TRIGGER_WINDOW_MS = 2500;
 
   let config = loadConfig();
   let monitoring = false;
@@ -291,6 +360,13 @@
   let viewerCount = 0;
   let detectionTimer = null;
   let previousImageData = null;
+  let audioCtx = null;
+  let analyser = null;
+  let audioData = null;
+  let audioTimer = null;
+  let loudSamples = 0;
+  let lastMotionTime = 0;
+  let lastSoundTime = 0;
   let lastAlertTime = 0;
   let alertCount = 0;
   let startTime = 0;
@@ -302,6 +378,10 @@
   const video = $('video');
   const motionBadge = $('motionBadge');
   const streamBadge = $('streamBadge');
+  const soundBadge = $('soundBadge');
+  const meterRow = $('meterRow');
+  const meterFill = $('meterFill');
+  const meterThreshold = $('meterThreshold');
   const statusDot = $('statusDot');
   const headerStatus = $('headerStatus');
   const canvasCurrent = $('canvasCurrent');
@@ -325,6 +405,7 @@
       chatId: $('cfgChatId').value.trim(),
       camera: $('cfgCamera').value,
       sensitivity: parseInt($('cfgSensitivity').value, 10),
+      soundSensitivity: parseInt($('cfgSoundSensitivity').value, 10),
     };
     localStorage.setItem('kobecam-config', JSON.stringify(config));
   }
@@ -338,6 +419,8 @@
     $('cfgChatId').value = config.chatId || '';
     $('cfgCamera').value = config.camera || 'environment';
     $('cfgSensitivity').value = String(config.sensitivity || 5);
+    // ?? not || — 0 means "Off" and is a valid saved choice
+    $('cfgSoundSensitivity').value = String(config.soundSensitivity ?? 70);
   }
 
   function log(msg, type = '') {
@@ -392,7 +475,11 @@
   async function startCamera() {
     stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: config.camera || 'environment' },
-      audio: false,
+      audio: {
+        echoCancellation: false,
+        noiseSuppression: false,  // we want to hear barks, not suppress them
+        autoGainControl: false,   // AGC would drift the threshold under us
+      },
     });
     video.srcObject = stream;
     await new Promise(resolve => { video.onloadedmetadata = resolve; });
@@ -509,32 +596,139 @@
     const sensitivity = config.sensitivity || 5;
 
     if (changePercent > sensitivity) {
-      onMotionDetected(changePercent);
+      lastMotionTime = Date.now();
+      motionBadge.textContent = 'Motion ' + changePercent.toFixed(1) + '%';
+      motionBadge.classList.add('active');
+      triggerAlert('Motion detected (' + changePercent.toFixed(1) + '% change)', 'motion');
     } else {
       motionBadge.textContent = 'Calm';
       motionBadge.classList.remove('active');
     }
   }
 
-  async function onMotionDetected(changePercent) {
-    motionBadge.textContent = 'Motion ' + changePercent.toFixed(1) + '%';
-    motionBadge.classList.add('active');
+  // --- Sound Detection ---
+  function startAudioDetection() {
+    // Reset UI in case a previous session ran with sound alerts off
+    meterRow.classList.remove('hidden');
+    soundBadge.style.display = '';
+    meterFill.style.width = '0%';
+    soundBadge.textContent = 'Quiet';
+    soundBadge.classList.remove('active');
 
+    const threshold = config.soundSensitivity ?? 70;
+    if (!threshold) {
+      // Sound alerts off — mic audio still rides along on the published stream
+      meterRow.classList.add('hidden');
+      soundBadge.style.display = 'none';
+      return;
+    }
+
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const source = audioCtx.createMediaStreamSource(stream);
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 1024;
+      analyser.smoothingTimeConstant = 0.3;
+      // Deliberately NOT connected to destination — no playback, no feedback loop
+      source.connect(analyser);
+      audioData = new Uint8Array(analyser.fftSize);
+
+      meterThreshold.style.left = threshold + '%';
+      loudSamples = 0;
+      // iOS starts the context suspended; this runs off the Start button gesture
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      audioTimer = setInterval(sampleAudio, AUDIO_INTERVAL_MS);
+      log('Sound detection active (threshold ' + threshold + ')');
+    } catch (err) {
+      log('Sound detection unavailable: ' + err.message, 'error');
+      meterRow.classList.add('hidden');
+    }
+  }
+
+  function stopAudioDetection() {
+    clearInterval(audioTimer);
+    audioTimer = null;
+    if (audioCtx) {
+      try { audioCtx.close(); } catch {}
+      audioCtx = null;
+    }
+    analyser = null;
+    audioData = null;
+    loudSamples = 0;
+    soundActive = false;
+  }
+
+  // Current mic level as 0-100, mapping -60dBFS..0dBFS. dB rather than raw RMS
+  // because it separates ambient / speech / bark far more usefully.
+  function currentAudioLevel() {
+    analyser.getByteTimeDomainData(audioData);
+    let sum = 0;
+    for (let i = 0; i < audioData.length; i++) {
+      const v = (audioData[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / audioData.length);
+    const db = 20 * Math.log10(rms + 1e-9);
+    return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+  }
+
+  function sampleAudio() {
+    if (!analyser) return;
+
+    const level = currentAudioLevel();
+    const threshold = config.soundSensitivity ?? 70;
+
+    meterFill.style.width = level.toFixed(1) + '%';
+    meterFill.classList.toggle('loud', level > threshold);
+
+    if (level > threshold) {
+      loudSamples++;
+    } else {
+      loudSamples = 0;
+      soundBadge.textContent = 'Quiet';
+      soundBadge.classList.remove('active');
+      return;
+    }
+
+    // Require a sustained run so a single click or pop doesn't fire an alert
+    if (loudSamples < AUDIO_SUSTAIN_SAMPLES) return;
+
+    lastSoundTime = Date.now();
+    soundBadge.textContent = 'Barking';
+    soundBadge.classList.add('active');
+    triggerAlert('Barking detected (level ' + level.toFixed(0) + ')', 'sound');
+  }
+
+  // --- Shared Alert Path (motion and sound share one cooldown) ---
+  async function triggerAlert(logMessage, source) {
     const now = Date.now();
     if (now - lastAlertTime < COOLDOWN_MS) return;
-    lastAlertTime = now;
+    lastAlertTime = now;  // claim the window immediately so the other detector can't double-fire
+
     alertCount++;
     $('statAlerts').textContent = alertCount;
     $('statLast').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-    log('Motion detected (' + changePercent.toFixed(1) + '% change)', 'motion');
+    log(logMessage, source === 'sound' ? 'alert' : 'motion');
+
+    // Give the slower detector a chance to weigh in before composing the caption
+    await new Promise(resolve => setTimeout(resolve, ALERT_COMPOSE_DELAY_MS));
+
+    const t = Date.now();
+    const motionRecent = t - lastMotionTime < TRIGGER_WINDOW_MS;
+    const soundRecent = t - lastSoundTime < TRIGGER_WINDOW_MS;
+
+    let reason;
+    if (motionRecent && soundRecent) reason = 'Motion + barking detected';
+    else if (soundRecent) reason = 'Barking detected';
+    else reason = 'Motion detected';
 
     try {
       ctxSnapshot.drawImage(video, 0, 0, canvasSnapshot.width, canvasSnapshot.height);
       const blob = await new Promise(resolve =>
         canvasSnapshot.toBlob(resolve, 'image/jpeg', 0.7)
       );
-      await sendTelegramPhoto(blob);
+      await sendTelegramPhoto(blob, reason);
       log('Alert sent to Telegram', 'alert');
     } catch (err) {
       log('Failed to send alert: ' + err.message, 'error');
@@ -542,14 +736,14 @@
   }
 
   // --- Telegram ---
-  async function sendTelegramPhoto(blob) {
+  async function sendTelegramPhoto(blob, reason) {
     const form = new FormData();
     form.append('chat_id', config.chatId);
     form.append('photo', blob, 'motion.jpg');
     const now = new Date();
     const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
     const liveUrl = 'https://vdo.ninja/?view=' + config.streamId + '&password=false';
-    form.append('caption', 'Motion detected at ' + time + '\n\n<a href="' + liveUrl + '">Watch live</a>');
+    form.append('caption', reason + ' at ' + time + '\n\n<a href="' + liveUrl + '">Watch live</a>');
     form.append('parse_mode', 'HTML');
 
     const res = await fetch('https://api.telegram.org/bot' + config.botToken + '/sendPhoto', {
@@ -611,6 +805,7 @@
     log('Monitoring started');
 
     startDetection();
+    startAudioDetection();
     startUptime();
     await acquireWakeLock();
     await startVDO();
@@ -619,6 +814,7 @@
   function stopMonitoring() {
     monitoring = false;
     stopDetection();
+    stopAudioDetection();
     stopVDO();
     stopCamera();
     stopUptime();
@@ -643,6 +839,8 @@
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && monitoring) {
       acquireWakeLock();
+      // iOS suspends the AudioContext in the background
+      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
     }
   });
 

@@ -1,6 +1,6 @@
 # Kobe-Cam
 
-A zero-cost pet camera that turns an old iPhone into a motion-detecting pet monitor. Uses [VDO.Ninja](https://vdo.ninja/) for free P2P video streaming and a Telegram bot for instant motion alerts with snapshot photos.
+A zero-cost pet camera that turns an old iPhone into a motion- and sound-detecting pet monitor. Uses [VDO.Ninja](https://vdo.ninja/) for free P2P video streaming and a Telegram bot for instant alerts with snapshot photos.
 
 **No servers. No subscriptions. No dedicated hardware.**
 
@@ -9,15 +9,16 @@ A zero-cost pet camera that turns an old iPhone into a motion-detecting pet moni
 ```
 Old iPhone (Safari)                    Your Phone
 ┌─────────────────────┐              ┌──────────────────┐
-│  Camera stream      │──P2P WebRTC──►│  Live viewer     │
-│  Motion detection   │               │  (optional)      │
-│  On motion:         │              └──────────────────┘
+│  Camera + mic       │──P2P WebRTC──►│  Live viewer     │
+│  Motion detection   │               │  (with audio)    │
+│  Bark detection     │              └──────────────────┘
+│  On motion/bark:    │
 │   snapshot → ───────│── Telegram ──► Family Group Chat
-└─────────────────────┘                 📸 + "Motion!" + live link
+└─────────────────────┘                 📸 + reason + live link
 ```
 
-- The iPhone runs the **Pet Station** page in Safari — it streams video via VDO.Ninja (P2P WebRTC) and monitors for motion locally
-- When motion is detected, it captures a snapshot and sends it to your **Telegram group** via bot API
+- The iPhone runs the **Pet Station** page in Safari — it streams video and audio via VDO.Ninja (P2P WebRTC) and watches for motion and barking locally
+- When motion or barking is detected, it captures a snapshot and sends it to your **Telegram group** via bot API, labeled with what triggered it
 - Anyone in the group gets push notifications with the photo
 - Anyone with the viewer link can watch the live stream
 
@@ -56,11 +57,28 @@ Old iPhone (Safari)                    Your Phone
 1. Open `https://YOUR_USERNAME.github.io/kobe-cam/` on the old iPhone in Safari
 2. Enter your **Stream ID** (letters and numbers only, e.g., "kobecam123" — a random one is pre-filled)
 3. Enter your **Telegram Bot Token** and **Chat ID**
-4. Choose back or front camera
-5. Tap **Start Monitoring**
+4. Choose back or front camera, motion sensitivity, and sound sensitivity
+5. Tap **Start Monitoring** — grant both **camera and microphone** permission
 6. Position the phone where it can see your pet
 
 Settings are saved on the device — you only configure once.
+
+#### Tuning sound alerts
+
+While monitoring, a **Sound** level meter appears under the camera with a tick marking your
+threshold. Watch it to calibrate: note where ambient noise sits versus an actual bark, then
+pick the sensitivity whose tick falls between them.
+
+| Setting | Threshold | Catches |
+|---|---|---|
+| High | 55 | Quiet whines and whimpers |
+| Medium (default) | 70 | Barking |
+| Low | 82 | Loud, sustained barking only |
+| Off | — | Sound alerts disabled (stream audio still works) |
+
+Detection is loudness-based, not bark-specific — any sustained loud noise triggers it. Since
+the dog is usually home alone, that's nearly always the dog. A sound must stay above the
+threshold for ~200 ms, so single clicks and pops don't fire alerts.
 
 ### 5. Watch Live (Optional)
 
@@ -77,11 +95,12 @@ https://vdo.ninja/?view=YOUR_STREAM_ID&password=false
 ## Features
 
 - **Motion detection** — runs on-device using canvas frame diffing, no cloud processing
-- **Telegram alerts with snapshots** — JPEG photo sent to your group on each motion event, with a one-tap "Watch live" link
-- **30-second cooldown** — prevents notification spam
-- **Live streaming** — P2P via VDO.Ninja, near-zero latency
+- **Bark / sound detection** — on-device mic level analysis with a live meter for calibration
+- **Telegram alerts with snapshots** — JPEG photo sent to your group, labeled "Motion detected", "Barking detected", or "Motion + barking detected", with a one-tap "Watch live" link
+- **30-second shared cooldown** — a barking, moving dog sends one alert, not two
+- **Live streaming with audio** — P2P via VDO.Ninja, near-zero latency; viewers can hear the room
 - **Wake lock** — keeps the iPhone screen and camera active
-- **Configurable sensitivity** — high / medium / low thresholds
+- **Configurable sensitivity** — independent thresholds for motion and sound
 - **Multi-viewer** — anyone with the stream ID can watch live
 - **Multi-subscriber** — anyone in the Telegram group gets alerts
 
@@ -93,10 +112,11 @@ https://vdo.ninja/?view=YOUR_STREAM_ID&password=false
 
 ## Privacy & Security
 
-- Video streams are **peer-to-peer encrypted** (WebRTC DTLS-SRTP)
-- Signaling goes through VDO.Ninja's free servers — only connection metadata, no video
-- Motion detection runs **entirely on-device** — no video is uploaded to any server
-- Only snapshot photos are sent to Telegram on motion events
+- Video and audio streams are **peer-to-peer encrypted** (WebRTC DTLS-SRTP)
+- Signaling goes through VDO.Ninja's free servers — only connection metadata, no media
+- Motion and sound detection run **entirely on-device** — no video or audio is uploaded to any server
+- Only snapshot photos are sent to Telegram on alert events — audio is never recorded or sent
+- The live stream carries room audio, so anyone with the stream ID can listen in — set Sound Alerts appropriately and keep the ID hard to guess
 - Bot token and chat ID are stored in the iPhone's localStorage — never committed to the repo
 - The stream ID is the only "password" for live viewing — choose something hard to guess
 
@@ -104,7 +124,7 @@ https://vdo.ninja/?view=YOUR_STREAM_ID&password=false
 
 | File | Purpose |
 |------|---------|
-| `index.html` | Pet Station — camera, motion detection, Telegram alerts, P2P streaming |
+| `index.html` | Pet Station — camera, mic, motion + sound detection, Telegram alerts, P2P streaming |
 | `viewer.html` | Live viewer — embeds the VDO.Ninja stream |
 | `docs/PRD.md` | Product requirements document |
 
