@@ -181,6 +181,17 @@
     transition: width 80ms linear;
   }
   .meter-fill.loud { background: var(--warn); }
+  .diag {
+    padding: 6px 16px 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+  .diag.hidden { display: none; }
+  .diag.bad { color: var(--danger); }
   .meter-threshold {
     position: absolute;
     top: -2px;
@@ -309,6 +320,7 @@
       <div class="meter-threshold" id="meterThreshold"></div>
     </div>
   </div>
+  <div class="diag" id="diag">audio: not started</div>
   <div class="stats-bar">
     <div class="stat">
       <div class="stat-value" id="statAlerts">0</div>
@@ -365,6 +377,7 @@
   let audioData = null;
   let audioTimer = null;
   let loudSamples = 0;
+  let audioPeak = 0;
   let lastMotionTime = 0;
   let lastSoundTime = 0;
   let lastAlertTime = 0;
@@ -382,6 +395,7 @@
   const meterRow = $('meterRow');
   const meterFill = $('meterFill');
   const meterThreshold = $('meterThreshold');
+  const diagEl = $('diag');
   const statusDot = $('statusDot');
   const headerStatus = $('headerStatus');
   const canvasCurrent = $('canvasCurrent');
@@ -607,24 +621,58 @@
   }
 
   // --- Sound Detection ---
+
+  // MUST be called synchronously from the Start button handler, before any await.
+  // iOS Safari ties AudioContext startup to an active user gesture, and awaiting
+  // getUserMedia first loses that gesture — the context then stays suspended and
+  // the analyser silently reads all zeros.
+  function createAudioContext() {
+    if (audioCtx) return;
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (err) {
+      audioCtx = null;
+      log('Could not create audio context: ' + err.message, 'error');
+    }
+  }
+
+  async function resumeAudioContext(why) {
+    if (!audioCtx || audioCtx.state === 'running') return;
+    try {
+      await audioCtx.resume();
+      log('Audio context resumed (' + why + ')');
+    } catch (err) {
+      log('Audio context resume failed (' + why + '): ' + err.message, 'error');
+    }
+  }
+
   function startAudioDetection() {
     // Reset UI in case a previous session ran with sound alerts off
     meterRow.classList.remove('hidden');
+    diagEl.classList.remove('hidden', 'bad');
     soundBadge.style.display = '';
     meterFill.style.width = '0%';
     soundBadge.textContent = 'Quiet';
     soundBadge.classList.remove('active');
+    diagEl.textContent = 'audio: starting…';
 
     const threshold = config.soundSensitivity ?? 70;
     if (!threshold) {
       // Sound alerts off — mic audio still rides along on the published stream
       meterRow.classList.add('hidden');
+      diagEl.classList.add('hidden');
       soundBadge.style.display = 'none';
       return;
     }
 
+    if (!audioCtx) {
+      log('Sound detection unavailable: no audio context', 'error');
+      diagEl.textContent = 'audio: no AudioContext';
+      diagEl.classList.add('bad');
+      return;
+    }
+
     try {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const source = audioCtx.createMediaStreamSource(stream);
       analyser = audioCtx.createAnalyser();
       analyser.fftSize = 1024;
@@ -641,8 +689,8 @@
 
       meterThreshold.style.left = threshold + '%';
       loudSamples = 0;
-      // iOS starts the context suspended; this runs off the Start button gesture
-      if (audioCtx.state === 'suspended') audioCtx.resume();
+      audioPeak = 0;
+      resumeAudioContext('startup');
       audioTimer = setInterval(sampleAudio, AUDIO_INTERVAL_MS);
       log('Sound detection active (threshold ' + threshold + ')');
     } catch (err) {
@@ -677,14 +725,35 @@
     return Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
   }
 
+  // One-line readout that distinguishes the failure modes: a dead context, a
+  // missing/muted track, or a live signal that simply never reaches the threshold.
+  function updateDiag(level, threshold) {
+    const tracks = stream ? stream.getAudioTracks() : [];
+    const t = tracks[0];
+    const trackInfo = !t
+      ? 'NO TRACK'
+      : (t.enabled ? 'on' : 'OFF') + (t.muted ? '/muted' : '') + '/' + t.readyState;
+    const state = audioCtx ? audioCtx.state : 'none';
+    const rate = audioCtx ? Math.round(audioCtx.sampleRate / 1000) + 'k' : '-';
+    diagEl.textContent =
+      'trk ' + tracks.length + ' ' + trackInfo +
+      ' · ctx ' + state + ' ' + rate +
+      ' · lvl ' + level.toFixed(0) +
+      ' · peak ' + audioPeak.toFixed(0) +
+      ' · thr ' + threshold;
+    diagEl.classList.toggle('bad', state !== 'running' || !t || t.muted);
+  }
+
   function sampleAudio() {
     if (!analyser) return;
 
     const level = currentAudioLevel();
     const threshold = config.soundSensitivity ?? 70;
 
+    if (level > audioPeak) audioPeak = level;
     meterFill.style.width = level.toFixed(1) + '%';
     meterFill.classList.toggle('loud', level > threshold);
+    updateDiag(level, threshold);
 
     if (level > threshold) {
       loudSamples++;
@@ -794,6 +863,9 @@
       return;
     }
 
+    // Before any await, while the Start tap still counts as a user gesture
+    createAudioContext();
+
     try {
       await startCamera();
     } catch (err) {
@@ -845,9 +917,15 @@
     if (document.visibilityState === 'visible' && monitoring) {
       acquireWakeLock();
       // iOS suspends the AudioContext in the background
-      if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+      resumeAudioContext('foreground');
     }
   });
+
+  // Last-resort recovery: any tap is a fresh gesture, so a context that failed
+  // to start can still be revived without restarting monitoring.
+  document.addEventListener('touchend', () => {
+    if (monitoring) resumeAudioContext('tap');
+  }, { passive: true });
 
   restoreConfig();
 })();
