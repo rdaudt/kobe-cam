@@ -297,11 +297,11 @@
     <label>Sound Alerts</label>
     <select id="cfgSoundSensitivity">
       <option value="0">Off</option>
-      <option value="55">High — quiet whines and whimpers</option>
-      <option value="70" selected>Medium — barking</option>
-      <option value="82">Low — loud, sustained barking only</option>
+      <option value="8">High — whines and soft barks</option>
+      <option value="12" selected>Medium — barking</option>
+      <option value="18">Low — loud, sustained barking only</option>
     </select>
-    <div class="hint">Watch the level meter while monitoring to calibrate. Needs microphone permission.</div>
+    <div class="hint">Detects sound above the room's own background level, so it adapts to any room. Needs microphone permission.</div>
   </div>
   <button class="btn btn-primary" id="btnStart">Start Monitoring</button>
 </div>
@@ -359,6 +359,9 @@
   const PIXEL_DIFF_THRESHOLD = 30;
   const AUDIO_INTERVAL_MS = 100;
   const AUDIO_SUSTAIN_SAMPLES = 2;  // consecutive samples above threshold before firing
+  const AUDIO_SEED_SAMPLES = 5;     // fast-converge the ambient baseline at startup
+  const AMBIENT_EMA = 0.05;         // how fast the ambient baseline tracks the room when quiet
+  const DEFAULT_SOUND_MARGIN = 12;  // level units above ambient (Medium)
   // Sound samples every 100ms but motion only every 500ms, so the first detector to
   // trip would otherwise caption the alert alone. Pause briefly to let the other one
   // weigh in, and count a trigger as active if it fired anywhere in the recent window.
@@ -378,6 +381,8 @@
   let audioTimer = null;
   let loudSamples = 0;
   let audioPeak = 0;
+  let ambientLevel = 0;
+  let audioSamples = 0;
   let lastMotionTime = 0;
   let lastSoundTime = 0;
   let lastAlertTime = 0;
@@ -433,8 +438,14 @@
     $('cfgChatId').value = config.chatId || '';
     $('cfgCamera').value = config.camera || 'environment';
     $('cfgSensitivity').value = String(config.sensitivity || 5);
+    // Migrate legacy absolute thresholds (55/70/82) to the new ambient-relative
+    // margins (8/12/18), preserving the user's High/Medium/Low intent.
+    const legacyMargins = { 55: 8, 70: 12, 82: 18 };
+    if (legacyMargins[config.soundSensitivity]) {
+      config.soundSensitivity = legacyMargins[config.soundSensitivity];
+    }
     // ?? not || — 0 means "Off" and is a valid saved choice
-    $('cfgSoundSensitivity').value = String(config.soundSensitivity ?? 70);
+    $('cfgSoundSensitivity').value = String(config.soundSensitivity ?? DEFAULT_SOUND_MARGIN);
   }
 
   function log(msg, type = '') {
@@ -656,8 +667,8 @@
     soundBadge.classList.remove('active');
     diagEl.textContent = 'audio: starting…';
 
-    const threshold = config.soundSensitivity ?? 70;
-    if (!threshold) {
+    const margin = config.soundSensitivity ?? DEFAULT_SOUND_MARGIN;
+    if (!margin) {
       // Sound alerts off — mic audio still rides along on the published stream
       meterRow.classList.add('hidden');
       diagEl.classList.add('hidden');
@@ -687,12 +698,13 @@
       silentGain.connect(audioCtx.destination);
       audioData = new Uint8Array(analyser.fftSize);
 
-      meterThreshold.style.left = threshold + '%';
       loudSamples = 0;
       audioPeak = 0;
+      ambientLevel = 0;
+      audioSamples = 0;
       resumeAudioContext('startup');
       audioTimer = setInterval(sampleAudio, AUDIO_INTERVAL_MS);
-      log('Sound detection active (threshold ' + threshold + ')');
+      log('Sound detection active (margin +' + margin + ' over ambient)');
     } catch (err) {
       log('Sound detection unavailable: ' + err.message, 'error');
       meterRow.classList.add('hidden');
@@ -726,21 +738,21 @@
   }
 
   // One-line readout that distinguishes the failure modes: a dead context, a
-  // missing/muted track, or a live signal that simply never reaches the threshold.
-  function updateDiag(level, threshold) {
+  // missing/muted track, or a live signal that simply never crosses the bar.
+  function updateDiag(level, ambient, threshold) {
     const tracks = stream ? stream.getAudioTracks() : [];
     const t = tracks[0];
     const trackInfo = !t
       ? 'NO TRACK'
       : (t.enabled ? 'on' : 'OFF') + (t.muted ? '/muted' : '') + '/' + t.readyState;
     const state = audioCtx ? audioCtx.state : 'none';
-    const rate = audioCtx ? Math.round(audioCtx.sampleRate / 1000) + 'k' : '-';
     diagEl.textContent =
       'trk ' + tracks.length + ' ' + trackInfo +
-      ' · ctx ' + state + ' ' + rate +
+      ' · ctx ' + state +
       ' · lvl ' + level.toFixed(0) +
-      ' · peak ' + audioPeak.toFixed(0) +
-      ' · thr ' + threshold;
+      ' · amb ' + ambient.toFixed(0) +
+      ' · thr ' + threshold.toFixed(0) +
+      ' · peak ' + audioPeak.toFixed(0);
     diagEl.classList.toggle('bad', state !== 'running' || !t || t.muted);
   }
 
@@ -748,16 +760,30 @@
     if (!analyser) return;
 
     const level = currentAudioLevel();
-    const threshold = config.soundSensitivity ?? 70;
+    const margin = config.soundSensitivity ?? DEFAULT_SOUND_MARGIN;
+
+    // Seed the ambient baseline fast on the first few samples, then let it drift
+    // slowly. The result is a threshold relative to whatever this room + mic
+    // actually produce, instead of a fixed number that has to be guessed per room.
+    if (audioSamples < AUDIO_SEED_SAMPLES) {
+      ambientLevel = ambientLevel === 0 ? level : (ambientLevel + level) / 2;
+    }
+    audioSamples++;
+
+    const threshold = ambientLevel + margin;
 
     if (level > audioPeak) audioPeak = level;
     meterFill.style.width = level.toFixed(1) + '%';
+    meterThreshold.style.left = Math.min(100, threshold) + '%';
     meterFill.classList.toggle('loud', level > threshold);
-    updateDiag(level, threshold);
+    updateDiag(level, ambientLevel, threshold);
 
     if (level > threshold) {
       loudSamples++;
     } else {
+      // Only let the baseline track the room while it's quiet, so a sustained
+      // bark can't slowly raise ambient and silence itself.
+      ambientLevel += (level - ambientLevel) * AMBIENT_EMA;
       loudSamples = 0;
       soundBadge.textContent = 'Quiet';
       soundBadge.classList.remove('active');
@@ -770,7 +796,7 @@
     lastSoundTime = Date.now();
     soundBadge.textContent = 'Barking';
     soundBadge.classList.add('active');
-    triggerAlert('Barking detected (level ' + level.toFixed(0) + ')', 'sound');
+    triggerAlert('Barking detected (level ' + level.toFixed(0) + ' vs ambient ' + ambientLevel.toFixed(0) + ')', 'sound');
   }
 
   // --- Shared Alert Path (motion and sound share one cooldown) ---
