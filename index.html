@@ -100,8 +100,10 @@
     transition: opacity 0.2s;
   }
   .btn:active { opacity: 0.8; }
+  .btn.hidden { display: none; }
   .btn-primary { background: var(--accent); color: #000; }
   .btn-danger { background: var(--danger); color: #fff; }
+  .btn-compact { width: auto; padding: 8px 18px; font-size: 14px; }
   .btn-ghost {
     background: transparent;
     color: var(--text-dim);
@@ -259,7 +261,10 @@
     <span class="status-dot" id="statusDot"></span>
     <h1>Kobe-Cam</h1>
   </div>
-  <span id="headerStatus" style="font-size:13px;color:var(--text-dim);">Not monitoring</span>
+  <div style="display:flex;align-items:center;gap:12px;">
+    <span id="headerStatus" style="font-size:13px;color:var(--text-dim);">Not monitoring</span>
+    <button class="btn btn-danger btn-compact hidden" id="btnStop">Stop</button>
+  </div>
 </div>
 
 <div class="config-panel" id="configPanel">
@@ -286,6 +291,15 @@
     </select>
   </div>
   <div class="field">
+    <label>Alert On</label>
+    <select id="cfgAlertSources">
+      <option value="both" selected>Motion &amp; sound</option>
+      <option value="motion">Motion only</option>
+      <option value="sound">Sound only</option>
+    </select>
+    <div class="hint">Which events send a Telegram alert. The live badges and meter always show both.</div>
+  </div>
+  <div class="field">
     <label>Motion Sensitivity</label>
     <select id="cfgSensitivity">
       <option value="3">High (3% pixel change)</option>
@@ -294,9 +308,8 @@
     </select>
   </div>
   <div class="field">
-    <label>Sound Alerts</label>
+    <label>Sound Sensitivity</label>
     <select id="cfgSoundSensitivity">
-      <option value="0">Off</option>
       <option value="8">High — whines and soft barks</option>
       <option value="12" selected>Medium — barking</option>
       <option value="18">Low — loud, sustained barking only</option>
@@ -339,7 +352,6 @@
   <div class="log" id="log"></div>
   <div class="monitor-footer">
     <button class="btn btn-ghost" id="btnSettings">Settings</button>
-    <button class="btn btn-danger" id="btnStop">Stop</button>
   </div>
 </div>
 
@@ -361,6 +373,7 @@
   const AUDIO_INTERVAL_MS = 100;
   const AUDIO_SUSTAIN_SAMPLES = 2;  // consecutive samples above threshold before firing
   const AUDIO_SEED_SAMPLES = 5;     // fast-converge the ambient baseline at startup
+  const AUDIO_WARMUP_SAMPLES = 12;  // don't alert until the baseline has settled (~1.2s)
   const AMBIENT_EMA = 0.05;         // how fast the ambient baseline tracks the room when quiet
   const DEFAULT_SOUND_MARGIN = 12;  // level units above ambient (Medium)
   // Sound samples every 100ms but motion only every 500ms, so the first detector to
@@ -427,6 +440,7 @@
       botToken: $('cfgBotToken').value.trim(),
       chatId: $('cfgChatId').value.trim(),
       camera: $('cfgCamera').value,
+      alertSources: $('cfgAlertSources').value,
       sensitivity: parseInt($('cfgSensitivity').value, 10),
       soundSensitivity: parseInt($('cfgSoundSensitivity').value, 10),
     };
@@ -448,8 +462,14 @@
     if (legacyMargins[config.soundSensitivity]) {
       config.soundSensitivity = legacyMargins[config.soundSensitivity];
     }
-    // ?? not || — 0 means "Off" and is a valid saved choice
-    $('cfgSoundSensitivity').value = String(config.soundSensitivity ?? DEFAULT_SOUND_MARGIN);
+    // The old "Sound Alerts: Off" (soundSensitivity 0) is now expressed as
+    // "Alert On: Motion only". Migrate it and restore a usable margin.
+    if (config.soundSensitivity === 0) {
+      if (!config.alertSources) config.alertSources = 'motion';
+      config.soundSensitivity = DEFAULT_SOUND_MARGIN;
+    }
+    $('cfgAlertSources').value = config.alertSources || 'both';
+    $('cfgSoundSensitivity').value = String(config.soundSensitivity || DEFAULT_SOUND_MARGIN);
   }
 
   function log(msg, type = '') {
@@ -628,7 +648,10 @@
       lastMotionTime = Date.now();
       motionBadge.textContent = 'Motion ' + changePercent.toFixed(1) + '%';
       motionBadge.classList.add('active');
-      triggerAlert('Motion detected (' + changePercent.toFixed(1) + '% change)', 'motion');
+      // Badge always reflects detection; only send when motion is an alert source
+      if (config.alertSources !== 'sound') {
+        triggerAlert('Motion detected (' + changePercent.toFixed(1) + '% change)', 'motion');
+      }
     } else {
       motionBadge.textContent = 'Calm';
       motionBadge.classList.remove('active');
@@ -782,6 +805,14 @@
     meterFill.classList.toggle('loud', level > threshold);
     updateDiag(level, ambientLevel, threshold);
 
+    // Let the baseline settle before alerting, so a startup spike (the Start
+    // tap, or setting the phone down) can't fire a false "barking" alert.
+    if (audioSamples <= AUDIO_WARMUP_SAMPLES) {
+      ambientLevel += (level - ambientLevel) * AMBIENT_EMA;
+      loudSamples = 0;
+      return;
+    }
+
     if (level > threshold) {
       loudSamples++;
     } else {
@@ -800,7 +831,10 @@
     lastSoundTime = Date.now();
     soundBadge.textContent = 'Barking';
     soundBadge.classList.add('active');
-    triggerAlert('Barking detected (level ' + level.toFixed(0) + ' vs ambient ' + ambientLevel.toFixed(0) + ')', 'sound');
+    // Badge always reflects detection; only send when sound is an alert source
+    if (config.alertSources !== 'motion') {
+      triggerAlert('Barking detected (level ' + level.toFixed(0) + ' vs ambient ' + ambientLevel.toFixed(0) + ')', 'sound');
+    }
   }
 
   let lastAlertOutcome = 'none yet';
@@ -837,9 +871,12 @@
     // Give the slower detector a chance to weigh in before composing the caption
     await new Promise(resolve => setTimeout(resolve, ALERT_COMPOSE_DELAY_MS));
 
+    // Only credit sources the user actually enabled, so a motion-only alert
+    // never says "barking" just because the mic also heard something.
     const t = Date.now();
-    const motionRecent = t - lastMotionTime < TRIGGER_WINDOW_MS;
-    const soundRecent = t - lastSoundTime < TRIGGER_WINDOW_MS;
+    const src = config.alertSources || 'both';
+    const motionRecent = src !== 'sound' && (t - lastMotionTime < TRIGGER_WINDOW_MS);
+    const soundRecent = src !== 'motion' && (t - lastSoundTime < TRIGGER_WINDOW_MS);
 
     let reason;
     if (motionRecent && soundRecent) reason = 'Motion + barking detected';
@@ -929,6 +966,7 @@
 
     $('configPanel').classList.add('hidden');
     $('monitorView').classList.remove('hidden');
+    $('btnStop').classList.remove('hidden');
     statusDot.classList.add('active');
     headerStatus.textContent = 'Monitoring';
     monitoring = true;
@@ -958,6 +996,7 @@
 
     $('monitorView').classList.add('hidden');
     $('configPanel').classList.remove('hidden');
+    $('btnStop').classList.add('hidden');
     statusDot.classList.remove('active');
     headerStatus.textContent = 'Not monitoring';
 
