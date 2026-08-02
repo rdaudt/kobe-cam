@@ -321,6 +321,7 @@
     </div>
   </div>
   <div class="diag" id="diag">audio: not started</div>
+  <div class="diag" id="alertDiag">alerts: none yet</div>
   <div class="stats-bar">
     <div class="stat">
       <div class="stat-value" id="statAlerts">0</div>
@@ -383,6 +384,8 @@
   let audioPeak = 0;
   let ambientLevel = 0;
   let audioSamples = 0;
+  let alertsSent = 0;
+  let alertsFailed = 0;
   let lastMotionTime = 0;
   let lastSoundTime = 0;
   let lastAlertTime = 0;
@@ -401,6 +404,7 @@
   const meterFill = $('meterFill');
   const meterThreshold = $('meterThreshold');
   const diagEl = $('diag');
+  const alertDiagEl = $('alertDiag');
   const statusDot = $('statusDot');
   const headerStatus = $('headerStatus');
   const canvasCurrent = $('canvasCurrent');
@@ -799,10 +803,28 @@
     triggerAlert('Barking detected (level ' + level.toFixed(0) + ' vs ambient ' + ambientLevel.toFixed(0) + ')', 'sound');
   }
 
+  let lastAlertOutcome = 'none yet';
+  // `outcome` is a sticky result (sent/FAIL) that must survive; `transient` is
+  // the cooldown countdown, which must never overwrite a failure reason.
+  function updateAlertDiag(transient, outcome) {
+    if (outcome) lastAlertOutcome = outcome;
+    alertDiagEl.textContent =
+      'alerts fired ' + alertCount +
+      ' · sent ' + alertsSent +
+      ' · fail ' + alertsFailed +
+      ' · last: ' + lastAlertOutcome +
+      (transient ? ' · ' + transient : '');
+    alertDiagEl.classList.toggle('bad', alertsFailed > 0);
+  }
+
   // --- Shared Alert Path (motion and sound share one cooldown) ---
   async function triggerAlert(logMessage, source) {
     const now = Date.now();
-    if (now - lastAlertTime < COOLDOWN_MS) return;
+    if (now - lastAlertTime < COOLDOWN_MS) {
+      const wait = Math.ceil((COOLDOWN_MS - (now - lastAlertTime)) / 1000);
+      updateAlertDiag('cooldown ' + wait + 's');
+      return;
+    }
     lastAlertTime = now;  // claim the window immediately so the other detector can't double-fire
 
     alertCount++;
@@ -810,6 +832,7 @@
     $('statLast').textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     log(logMessage, source === 'sound' ? 'alert' : 'motion');
+    updateAlertDiag(null, 'sending…');
 
     // Give the slower detector a chance to weigh in before composing the caption
     await new Promise(resolve => setTimeout(resolve, ALERT_COMPOSE_DELAY_MS));
@@ -828,10 +851,15 @@
       const blob = await new Promise(resolve =>
         canvasSnapshot.toBlob(resolve, 'image/jpeg', 0.7)
       );
+      if (!blob) throw new Error('snapshot failed (toBlob null)');
       await sendTelegramPhoto(blob, reason);
+      alertsSent++;
       log('Alert sent to Telegram', 'alert');
+      updateAlertDiag(null, 'sent ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (err) {
+      alertsFailed++;
       log('Failed to send alert: ' + err.message, 'error');
+      updateAlertDiag(null, 'FAIL: ' + err.message);
     }
   }
 
@@ -906,6 +934,11 @@
     monitoring = true;
 
     log('Monitoring started');
+
+    alertsSent = 0;
+    alertsFailed = 0;
+    lastAlertOutcome = 'waiting for first event';
+    updateAlertDiag();
 
     startDetection();
     startAudioDetection();
