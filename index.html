@@ -372,9 +372,13 @@
   const PIXEL_DIFF_THRESHOLD = 30;
   const AUDIO_INTERVAL_MS = 100;
   const AUDIO_SUSTAIN_SAMPLES = 2;  // consecutive samples above threshold before firing
-  const AUDIO_SEED_SAMPLES = 5;     // fast-converge the ambient baseline at startup
+  const AUDIO_SEED_SAMPLES = 5;     // seed the ambient baseline at startup
   const AUDIO_WARMUP_SAMPLES = 12;  // don't alert until the baseline has settled (~1.2s)
-  const AMBIENT_EMA = 0.05;         // how fast the ambient baseline tracks the room when quiet
+  // Ambient tracks the room's QUIET floor, so it must fall quickly but rise very
+  // slowly. Otherwise continuous barking drags the baseline up to meet itself and
+  // detection stops after the first alert.
+  const AMBIENT_FALL = 0.15;        // room got quieter — follow down fast
+  const AMBIENT_RISE = 0.004;       // room got louder — follow up very slowly (~25s)
   const DEFAULT_SOUND_MARGIN = 12;  // level units above ambient (Medium)
   // Sound samples every 100ms but motion only every 500ms, so the first detector to
   // trip would otherwise caption the alert alone. Pause briefly to let the other one
@@ -783,17 +787,24 @@
     diagEl.classList.toggle('bad', state !== 'running' || !t || t.muted);
   }
 
+  // Asymmetric tracking: the baseline follows the room down quickly but up only
+  // very slowly, so it settles on the quiet floor and continuous barking can't
+  // drag it up to silence itself.
+  function updateAmbient(level) {
+    const rate = level < ambientLevel ? AMBIENT_FALL : AMBIENT_RISE;
+    ambientLevel += (level - ambientLevel) * rate;
+  }
+
   function sampleAudio() {
     if (!analyser) return;
 
     const level = currentAudioLevel();
     const margin = config.soundSensitivity ?? DEFAULT_SOUND_MARGIN;
 
-    // Seed the ambient baseline fast on the first few samples, then let it drift
-    // slowly. The result is a threshold relative to whatever this room + mic
-    // actually produce, instead of a fixed number that has to be guessed per room.
+    // Seed toward the quiet floor: take the lowest of the first few samples so
+    // that starting mid-bark doesn't seed the baseline up at the barking level.
     if (audioSamples < AUDIO_SEED_SAMPLES) {
-      ambientLevel = ambientLevel === 0 ? level : (ambientLevel + level) / 2;
+      ambientLevel = ambientLevel === 0 ? level : Math.min(ambientLevel, level);
     }
     audioSamples++;
 
@@ -808,7 +819,7 @@
     // Let the baseline settle before alerting, so a startup spike (the Start
     // tap, or setting the phone down) can't fire a false "barking" alert.
     if (audioSamples <= AUDIO_WARMUP_SAMPLES) {
-      ambientLevel += (level - ambientLevel) * AMBIENT_EMA;
+      updateAmbient(level);
       loudSamples = 0;
       return;
     }
@@ -816,9 +827,7 @@
     if (level > threshold) {
       loudSamples++;
     } else {
-      // Only let the baseline track the room while it's quiet, so a sustained
-      // bark can't slowly raise ambient and silence itself.
-      ambientLevel += (level - ambientLevel) * AMBIENT_EMA;
+      updateAmbient(level);
       loudSamples = 0;
       soundBadge.textContent = 'Quiet';
       soundBadge.classList.remove('active');
